@@ -1,7 +1,8 @@
 import pandas as pd
 import re
-import tensorflow as tf
+from collections import Counter
 import pickle
+
 
 def extract_utterances(dialog_str):
     utterances = re.findall(r"'(.*?)'|\"(.*?)\"", dialog_str)
@@ -29,54 +30,65 @@ def load_dialog_pairs(csv_path):
     return pairs
 
 
-def prepare_data(pairs, vocab_size=5000, max_len=20):
-    input_texts = []
-    target_texts = []
+def build_vocab(pairs, vocab_size=10000):
+    counter = Counter()
 
     for inp, tgt in pairs:
-        input_texts.append(inp)
-        target_texts.append("<start> " + tgt + " <end>")
+        counter.update(inp.split())
+        counter.update(tgt.split())
 
-    tokenizer = tf.keras.preprocessing.text.Tokenizer(
-        num_words=vocab_size,
-        filters='',
-        oov_token="<unk>"
-    )
+    most_common = counter.most_common(vocab_size - 4)
 
-    tokenizer.fit_on_texts(input_texts + target_texts)
+    word2idx = {
+        "<pad>": 0,
+        "<unk>": 1,
+        "<start>": 2,
+        "<end>": 3
+    }
 
-    input_sequences = tokenizer.texts_to_sequences(input_texts)
-    target_sequences = tokenizer.texts_to_sequences(target_texts)
+    for word, _ in most_common:
+        word2idx[word] = len(word2idx)
 
-    input_padded = tf.keras.preprocessing.sequence.pad_sequences(
-        input_sequences,
-        maxlen=max_len,
-        padding='post',
-        truncating='post'
-    )
+    idx2word = {idx: word for word, idx in word2idx.items()}
 
-    target_padded = tf.keras.preprocessing.sequence.pad_sequences(
-        target_sequences,
-        maxlen=max_len,
-        padding='post',
-        truncating='post'
-    )
+    return word2idx, idx2word
 
-    return input_padded, target_padded, tokenizer
+
+def encode_sentence(sentence, word2idx, max_len):
+    tokens = sentence.split()
+    ids = [word2idx.get(word, word2idx["<unk>"]) for word in tokens]
+
+    ids = ids[:max_len]
+    ids += [word2idx["<pad>"]] * (max_len - len(ids))
+
+    return ids
+
+
+def prepare_data(pairs, word2idx, max_len=20):
+    inputs = []
+    targets = []
+
+    for inp, tgt in pairs:
+        tgt = "<start> " + tgt + " <end>"
+
+        input_ids = encode_sentence(inp, word2idx, max_len)
+        target_ids = encode_sentence(tgt, word2idx, max_len)
+
+        inputs.append(input_ids)
+        targets.append(target_ids)
+
+    return inputs, targets
 
 
 if __name__ == "__main__":
     pairs = load_dialog_pairs("data/train.csv")
     print("Total pairs:", len(pairs))
 
-    input_padded, target_padded, tokenizer = prepare_data(pairs)
+    word2idx, idx2word = build_vocab(pairs)
+    inputs, targets = prepare_data(pairs, word2idx)
 
-    print("Input shape:", input_padded.shape)
-    print("Target shape:", target_padded.shape)
+    print("Sample input:", inputs[0])
+    print("Sample target:", targets[0])
 
-    print("Sample input sequence:", input_padded[0])
-    print("Sample target sequence:", target_padded[0])
-    
-
-    with open("tokenizer.pkl", "wb") as f:
-        pickle.dump(tokenizer, f)
+    with open("vocab.pkl", "wb") as f:
+        pickle.dump((word2idx, idx2word), f)
