@@ -21,10 +21,10 @@ print("Using device:", DEVICE)
 
 MAX_LEN = 20
 BATCH_SIZE = 64
-EMBED_SIZE = 256
-HIDDEN_SIZE = 256
+EMBED_SIZE = 300
+HIDDEN_SIZE = 512
 EPOCHS = 20
-VOCAB_LIMIT = 10000
+VOCAB_LIMIT = 15000
 
 
 # =========================================================

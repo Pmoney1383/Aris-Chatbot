@@ -32,7 +32,7 @@ def encode_input(text):
     return torch.tensor([ids], dtype=torch.long).to(DEVICE)
 
 
-def generate_response(text, temperature=0.8):
+def generate_response(text, temperature=1.0):
     src = encode_input(text)
     encoder_outputs, hidden, cell = model.encoder(src)
 
@@ -40,21 +40,30 @@ def generate_response(text, temperature=0.8):
 
     response = []
 
-    for _ in range(MAX_LEN):
+    MIN_LEN = 3
+
+    for step in range(MAX_LEN):
+
         output, hidden, cell = model.decoder(
             input_token, hidden, cell, encoder_outputs
         )
 
-        logits = output[:, -1, :]
-        probs = F.softmax(logits / temperature, dim=-1)
-        predicted = torch.multinomial(probs, 1).item()
+        logits = output[:, 0, :]
+        top_k = 20
 
-        if predicted == word2idx["<end>"]:
+        probs = F.softmax(logits / temperature, dim=-1)
+        top_probs, top_idx = torch.topk(probs, top_k)
+
+        predicted = top_idx[0, torch.multinomial(top_probs, 1)].item()
+
+        if predicted == word2idx["<end>"] and step >= MIN_LEN:
             break
 
-        response.append(idx2word.get(predicted, "<unk>"))
+        if predicted != word2idx["<end>"]:
+            response.append(idx2word.get(predicted, "<unk>"))
+
         input_token = torch.tensor([[predicted]], dtype=torch.long).to(DEVICE)
-        return " ".join(response)
+    return " ".join(response)
 
 
 if __name__ == "__main__":
