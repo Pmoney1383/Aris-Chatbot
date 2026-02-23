@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
-from tqdm import tqdm
+from rich.progress import Progress, BarColumn, TextColumn
 from torchinfo import summary
 import pickle
 import time
@@ -98,42 +98,75 @@ for epoch in range(EPOCHS):
     correct = 0
     total_tokens = 0
 
-    start_time = time.time()
+    epoch_start_time = time.time()
 
-    progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+    with Progress(
+        TextColumn(f"Epoch {epoch+1}/{EPOCHS}"),
+        BarColumn(bar_width=None, style="white", complete_style="green"),
+        TextColumn("{task.completed}/{task.total}"),
+        TextColumn("{task.fields[eta]}"),
+        TextColumn(" - accuracy: {task.fields[acc]:.4f}"),
+        TextColumn(" - loss: {task.fields[loss]:.4f}"),
+        transient=True,
+    ) as progress:
 
-    for src, trg in progress_bar:
-
-        src = src.to(DEVICE)
-        trg = trg.to(DEVICE)
-
-        decoder_input = trg[:, :-1]
-        decoder_target = trg[:, 1:]
-
-        outputs = model(src, decoder_input)
-
-        outputs_flat = outputs.reshape(-1, vocab_size)
-        target_flat = decoder_target.reshape(-1)
-
-        loss = criterion(outputs_flat, target_flat)
-
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-
-        train_loss += loss.item()
-
-        preds = outputs_flat.argmax(dim=1)
-        mask = target_flat != 0
-
-        correct += (preds[mask] == target_flat[mask]).sum().item()
-        total_tokens += mask.sum().item()
-
-        progress_bar.set_postfix(
-            loss=loss.item(),
-            accuracy=correct / total_tokens if total_tokens > 0 else 0
+        task = progress.add_task(
+            "",
+            total=len(train_loader),
+            acc=0.0,
+            loss=0.0,
+            eta=""
         )
+
+        for step, (src, trg) in enumerate(train_loader):
+
+            step_start = time.time()
+
+            src = src.to(DEVICE)
+            trg = trg.to(DEVICE)
+
+            decoder_input = trg[:, :-1]
+            decoder_target = trg[:, 1:]
+
+            outputs = model(src, decoder_input)
+
+            outputs_flat = outputs.reshape(-1, vocab_size)
+            target_flat = decoder_target.reshape(-1)
+
+            loss = criterion(outputs_flat, target_flat)
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            train_loss += loss.item()
+
+            preds = outputs_flat.argmax(dim=1)
+            mask = target_flat != 0
+
+            correct += (preds[mask] == target_flat[mask]).sum().item()
+            total_tokens += mask.sum().item()
+
+            current_acc = correct / total_tokens if total_tokens > 0 else 0
+
+            # ETA calculation
+            elapsed = time.time() - epoch_start_time
+            steps_done = step + 1
+            steps_left = len(train_loader) - steps_done
+            avg_step_time = elapsed / steps_done
+            remaining_seconds = int(avg_step_time * steps_left)
+            ms_per_step = int(avg_step_time * 1000)
+
+            eta_string = f"{remaining_seconds}s {ms_per_step}ms/step"
+
+            progress.update(
+                task,
+                advance=1,
+                acc=current_acc,
+                loss=loss.item(),
+                eta=eta_string,
+            )
 
     train_loss /= len(train_loader)
     train_accuracy = correct / total_tokens
@@ -144,8 +177,8 @@ for epoch in range(EPOCHS):
 
     model.eval()
     val_loss = 0
-    correct = 0
-    total_tokens = 0
+    val_correct = 0
+    val_total_tokens = 0
 
     with torch.no_grad():
         for src, trg in val_loader:
@@ -167,13 +200,13 @@ for epoch in range(EPOCHS):
             preds = outputs_flat.argmax(dim=1)
             mask = target_flat != 0
 
-            correct += (preds[mask] == target_flat[mask]).sum().item()
-            total_tokens += mask.sum().item()
+            val_correct += (preds[mask] == target_flat[mask]).sum().item()
+            val_total_tokens += mask.sum().item()
 
     val_loss /= len(val_loader)
-    val_accuracy = correct / total_tokens
+    val_accuracy = val_correct / val_total_tokens
 
-    epoch_time = time.time() - start_time
+    epoch_time = time.time() - epoch_start_time
 
     print(f"\nEpoch {epoch+1} Summary")
     print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_accuracy:.4f}")

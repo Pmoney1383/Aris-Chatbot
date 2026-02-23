@@ -30,7 +30,7 @@ def load_dialog_pairs(csv_path):
     return pairs
 
 
-def build_vocab(pairs, vocab_size=10000):
+def build_vocab(pairs, vocab_size=15000):
     counter = Counter()
 
     for inp, tgt in pairs:
