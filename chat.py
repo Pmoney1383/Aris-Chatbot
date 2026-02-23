@@ -40,15 +40,19 @@ def generate_response(input_text):
     for i in range(1, MAX_LEN - 1):
         prediction = model.predict([input_seq, decoder_input], verbose=0)
 
+        k = 20
         probs = prediction[0, i - 1]
 
         temperature = 0.8
-
         probs = np.log(probs + 1e-9) / temperature
         probs = np.exp(probs)
         probs = probs / np.sum(probs)
 
-        predicted_token = np.random.choice(len(probs), p=probs)
+        top_k_indices = np.argsort(probs)[-k:]
+        top_k_probs = probs[top_k_indices]
+        top_k_probs = top_k_probs / np.sum(top_k_probs)
+
+        predicted_token = np.random.choice(top_k_indices, p=top_k_probs)
 
         if predicted_token == end_token:
             break

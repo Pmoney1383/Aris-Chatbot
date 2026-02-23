@@ -4,7 +4,7 @@ from preprocess import load_dialog_pairs, prepare_data
 from model import build_model
 
 MAX_LEN = 20
-VOCAB_SIZE = 5000
+VOCAB_SIZE = 10000
 
 pairs = load_dialog_pairs("data/train.csv")
 input_padded, target_padded, tokenizer = prepare_data(
