@@ -1,44 +1,40 @@
-import tensorflow as tf
+import torch
+import torch.nn as nn
 
-def build_model(vocab_size, embedding_dim=128, units=256, max_len=20):
 
-    # Encoder
-    encoder_inputs = tf.keras.Input(shape=(max_len,))
-    embedding_layer = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+class Encoder(nn.Module):
+    def __init__(self, vocab_size, embed_size, hidden_size):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
+        self.lstm = nn.LSTM(embed_size, hidden_size, batch_first=True)
 
-    encoder_embedding = embedding_layer(encoder_inputs)
-    encoder_lstm = tf.keras.layers.LSTM(units, return_state=True)
-    _, state_h, state_c = encoder_lstm(encoder_embedding)
+    def forward(self, x):
+        embedded = self.embedding(x)
+        outputs, (hidden, cell) = self.lstm(embedded)
+        return hidden, cell
 
-    encoder_states = [state_h, state_c]
 
-    # Decoder
-    decoder_inputs = tf.keras.Input(shape=(max_len - 1,))
-    decoder_embedding = embedding_layer(decoder_inputs)
+class Decoder(nn.Module):
+    def __init__(self, vocab_size, embed_size, hidden_size):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
+        self.lstm = nn.LSTM(embed_size, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, vocab_size)
 
-    decoder_lstm = tf.keras.layers.LSTM(
-        units,
-        return_sequences=True,
-        return_state=True
-    )
+    def forward(self, x, hidden, cell):
+        embedded = self.embedding(x)
+        outputs, (hidden, cell) = self.lstm(embedded, (hidden, cell))
+        predictions = self.fc(outputs)
+        return predictions, hidden, cell
 
-    decoder_outputs, _, _ = decoder_lstm(
-        decoder_embedding,
-        initial_state=encoder_states
-    )
 
-    dense = tf.keras.layers.Dense(vocab_size, activation="softmax")
-    outputs = dense(decoder_outputs)
+class Seq2Seq(nn.Module):
+    def __init__(self, encoder, decoder):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
 
-    model = tf.keras.Model(
-        [encoder_inputs, decoder_inputs],
-        outputs
-    )
-
-    model.compile(
-        optimizer="adam",
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"]
-    )
-
-    return model
+    def forward(self, src, trg):
+        hidden, cell = self.encoder(src)
+        outputs, _, _ = self.decoder(trg, hidden, cell)
+        return outputs

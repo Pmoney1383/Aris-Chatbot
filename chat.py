@@ -1,66 +1,57 @@
-import tensorflow as tf
-import numpy as np
+import torch
+import torch.nn.functional as F
 import pickle
+from model import Encoder, Decoder, Seq2Seq
 
 MAX_LEN = 20
-VOCAB_SIZE = 5000
+EMBED_SIZE = 256
+HIDDEN_SIZE = 256
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Load vocab
+with open("vocab.pkl", "rb") as f:
+    word2idx, idx2word = pickle.load(f)
+
+vocab_size = len(word2idx)
 
 # Load model
-model = tf.keras.models.load_model("chatbot_model.keras")
-
-# Load tokenizer
-with open("tokenizer.pkl", "rb") as f:
-    tokenizer = pickle.load(f)
-
-index_word = tokenizer.index_word
-word_index = tokenizer.word_index
+encoder = Encoder(vocab_size, EMBED_SIZE, HIDDEN_SIZE)
+decoder = Decoder(vocab_size, EMBED_SIZE, HIDDEN_SIZE)
+model = Seq2Seq(encoder, decoder)
+model.load_state_dict(torch.load("chatbot_model.pt", map_location=DEVICE))
+model.to(DEVICE)
+model.eval()
 
 
-def generate_response(input_text):
-    input_text = input_text.lower()
+def encode_input(text):
+    tokens = text.lower().split()
+    ids = [word2idx.get(w, word2idx["<unk>"]) for w in tokens]
+    ids = ids[:MAX_LEN]
+    ids += [word2idx["<pad>"]] * (MAX_LEN - len(ids))
+    return torch.tensor([ids], dtype=torch.long).to(DEVICE)
 
-    # Convert input to sequence
-    input_seq = tokenizer.texts_to_sequences([input_text])
-    input_seq = tf.keras.preprocessing.sequence.pad_sequences(
-        input_seq,
-        maxlen=MAX_LEN,
-        padding='post',
-        truncating='post'
-    )
 
-    # Start token
-    start_token = word_index.get("<start>")
-    end_token = word_index.get("<end>")
+def generate_response(text, temperature=0.8):
+    src = encode_input(text)
+    hidden, cell = model.encoder(src)
 
-    decoder_input = np.zeros((1, MAX_LEN - 1))
-    decoder_input[0, 0] = start_token
+    input_token = torch.tensor([[word2idx["<start>"]]], dtype=torch.long).to(DEVICE)
 
     response = []
 
-    for i in range(1, MAX_LEN - 1):
-        prediction = model.predict([input_seq, decoder_input], verbose=0)
+    for _ in range(MAX_LEN):
+        output, hidden, cell = model.decoder(input_token, hidden, cell)
+        logits = output[:, -1, :]
+        probs = F.softmax(logits / temperature, dim=-1)
 
-        k = 20
-        probs = prediction[0, i - 1]
+        predicted = torch.multinomial(probs, 1).item()
 
-        temperature = 0.8
-        probs = np.log(probs + 1e-9) / temperature
-        probs = np.exp(probs)
-        probs = probs / np.sum(probs)
-
-        top_k_indices = np.argsort(probs)[-k:]
-        top_k_probs = probs[top_k_indices]
-        top_k_probs = top_k_probs / np.sum(top_k_probs)
-
-        predicted_token = np.random.choice(top_k_indices, p=top_k_probs)
-
-        if predicted_token == end_token:
+        if predicted == word2idx["<end>"]:
             break
 
-        word = index_word.get(predicted_token, "")
-        response.append(word)
-
-        decoder_input[0, i] = predicted_token
+        response.append(idx2word.get(predicted, "<unk>"))
+        input_token = torch.tensor([[predicted]], dtype=torch.long).to(DEVICE)
 
     return " ".join(response)
 
@@ -68,9 +59,8 @@ def generate_response(input_text):
 if __name__ == "__main__":
     while True:
         user_input = input("You: ")
-
         if user_input.lower() == "exit":
             break
 
-        bot_response = generate_response(user_input)
-        print("Aris:", bot_response)
+        reply = generate_response(user_input)
+        print("Aris:", reply)
