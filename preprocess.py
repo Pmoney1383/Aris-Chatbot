@@ -1,6 +1,7 @@
 import pandas as pd
 import re
 import tensorflow as tf
+import pickle
 
 def extract_utterances(dialog_str):
     utterances = re.findall(r"'(.*?)'|\"(.*?)\"", dialog_str)
@@ -75,3 +76,7 @@ if __name__ == "__main__":
 
     print("Sample input sequence:", input_padded[0])
     print("Sample target sequence:", target_padded[0])
+    
+
+    with open("tokenizer.pkl", "wb") as f:
+        pickle.dump(tokenizer, f)
