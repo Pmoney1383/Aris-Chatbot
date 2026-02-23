@@ -7,3 +7,11 @@ data/
 *.keras
 *.ckpt
 data/
+__pycache__/
+*.pyo
+*.pyd
+*.pt
+*.pth
+runs/
+.ipynb_checkpoints/
+.vscode/
