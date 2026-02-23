@@ -25,7 +25,7 @@ history = model.fit(
     [input_padded, decoder_input],
     decoder_target,
     batch_size=64,
-    epochs=5
+    epochs=20
 )
 
 model.save("chatbot_model.keras")

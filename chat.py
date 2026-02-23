@@ -40,7 +40,15 @@ def generate_response(input_text):
     for i in range(1, MAX_LEN - 1):
         prediction = model.predict([input_seq, decoder_input], verbose=0)
 
-        predicted_token = np.argmax(prediction[0, i - 1])
+        probs = prediction[0, i - 1]
+
+        temperature = 0.8
+
+        probs = np.log(probs + 1e-9) / temperature
+        probs = np.exp(probs)
+        probs = probs / np.sum(probs)
+
+        predicted_token = np.random.choice(len(probs), p=probs)
 
         if predicted_token == end_token:
             break

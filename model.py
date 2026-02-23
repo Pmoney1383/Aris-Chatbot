@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-def build_model(vocab_size, embedding_dim=128, units=128, max_len=20):
+def build_model(vocab_size, embedding_dim=128, units=256, max_len=20):
 
     # Encoder
     encoder_inputs = tf.keras.Input(shape=(max_len,))
