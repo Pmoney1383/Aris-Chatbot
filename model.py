@@ -1,108 +1,107 @@
+import math
 import torch
 import torch.nn as nn
 
-class Attention(nn.Module):
-    def __init__(self, hidden_size):
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
         super().__init__()
-        self.attn = nn.Linear(hidden_size * 2, hidden_size)
-        self.v = nn.Linear(hidden_size, 1, bias=False)
 
-    def forward(self, hidden, encoder_outputs):
-        # hidden: [num_layers, batch, hidden]
-        # encoder_outputs: [batch, seq_len, hidden]
-
-        batch_size = encoder_outputs.size(0)
-        seq_len = encoder_outputs.size(1)
-
-        # Use last layer hidden
-        hidden = hidden[-1]  # [batch, hidden]
-        hidden = hidden.unsqueeze(1).repeat(1, seq_len, 1)
-
-        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
-        attention = self.v(energy).squeeze(2)
-
-        return torch.softmax(attention, dim=1)
-
-class Encoder(nn.Module):
-    def __init__(self, vocab_size, embed_size, hidden_size, dropout=0.3):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
-        self.dropout = nn.Dropout(dropout)
-        self.lstm = nn.LSTM(
-            embed_size,
-            hidden_size,
-            batch_first=True,
-            dropout=dropout,
-            num_layers=2
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
         )
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        pe = pe.unsqueeze(1)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
-        embedded = self.dropout(self.embedding(x))
-        outputs, (hidden, cell) = self.lstm(embedded)
-        return outputs, hidden, cell
+        # x shape: (seq_len, batch, d_model)
+        seq_len = x.size(0)
+        return x + self.pe[:seq_len]
 
 
-class Decoder(nn.Module):
-    def __init__(self, vocab_size, embed_size, hidden_size, dropout=0.3):
+class TransformerChatModel(nn.Module):
+    def __init__(
+        self,
+        vocab_size,
+        d_model=256,
+        nhead=8,
+        num_encoder_layers=4,
+        num_decoder_layers=4,
+        dim_feedforward=1024,
+        dropout=0.3,
+        pad_idx=0,
+    ):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
-        self.dropout = nn.Dropout(dropout)
 
-        self.lstm = nn.LSTM(
-            embed_size + hidden_size,
-            hidden_size,
-            batch_first=True,
+        self.pad_idx = pad_idx
+        self.d_model = d_model
+
+        self.embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_idx)
+        self.pos_encoder = PositionalEncoding(d_model)
+
+        self.transformer = nn.Transformer(
+            d_model=d_model,
+            nhead=nhead,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
             dropout=dropout,
-            num_layers=2
         )
 
-        self.attention = Attention(hidden_size)
+        self.fc_out = nn.Linear(d_model, vocab_size)
 
-        self.fc = nn.Linear(hidden_size * 2, vocab_size)
+        self._init_weights()
 
-    def forward(self, x, hidden, cell, encoder_outputs):
-        # x: [batch, 1]
-        embedded = self.dropout(self.embedding(x))
+    def _init_weights(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
-        attn_weights = self.attention(hidden, encoder_outputs)
-        context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs)
+    def make_src_padding_mask(self, src):
+        # src: (batch, seq_len)
+        return (src == self.pad_idx)
 
-        lstm_input = torch.cat((embedded, context), dim=2)
+    def make_tgt_padding_mask(self, tgt):
+        return (tgt == self.pad_idx)
 
-        outputs, (hidden, cell) = self.lstm(lstm_input, (hidden, cell))
+    def forward(self, src, tgt):
+        # src, tgt shape: (batch, seq_len)
 
-        output = outputs.squeeze(1)
-        context = context.squeeze(1)
+        src_mask = None
 
-        prediction = self.fc(torch.cat((output, context), dim=1))
+        tgt_len = tgt.size(1)
+        tgt_mask = torch.triu(
+            torch.ones(tgt_len, tgt_len, device=tgt.device),
+            diagonal=1
+        ).bool()
 
-        return prediction.unsqueeze(1), hidden, cell
+        src_padding_mask = self.make_src_padding_mask(src)
+        tgt_padding_mask = self.make_tgt_padding_mask(tgt)
 
-class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder):
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
+        # Convert to (seq_len, batch)
+        src = src.transpose(0, 1)
+        tgt = tgt.transpose(0, 1)
 
-    def forward(self, src, trg):
-        encoder_outputs, hidden, cell = self.encoder(src)
+        src_emb = self.embedding(src) * math.sqrt(self.d_model)
+        tgt_emb = self.embedding(tgt) * math.sqrt(self.d_model)
 
-        batch_size = trg.size(0)
-        trg_len = trg.size(1)
-        vocab_size = self.decoder.fc.out_features
+        src_emb = self.pos_encoder(src_emb)
+        tgt_emb = self.pos_encoder(tgt_emb)
 
-        outputs = torch.zeros(batch_size, trg_len, vocab_size).to(src.device)
-
-        input_token = trg[:, 0].unsqueeze(1)  # <start>
-
-        for t in range(trg_len):
-            output, hidden, cell = self.decoder(
-                input_token, hidden, cell, encoder_outputs
-            )
-
-            outputs[:, t, :] = output.squeeze(1)
-
-            if t + 1 < trg_len:
-                input_token = trg[:, t + 1].unsqueeze(1)
-
-        return outputs
+        output = self.transformer(
+            src_emb,
+            tgt_emb,
+            src_mask=src_mask,
+            tgt_mask=tgt_mask,
+            src_key_padding_mask=src_padding_mask,
+            tgt_key_padding_mask=tgt_padding_mask,
+            memory_key_padding_mask=src_padding_mask,  # IMPORTANT
+        )
+        output = self.fc_out(output)
+        return output.transpose(0, 1)
