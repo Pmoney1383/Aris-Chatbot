@@ -1,36 +1,45 @@
-import pandas as pd
-import re
+import os
 from collections import Counter
 import pickle
 
-
-def extract_utterances(dialog_str):
-    utterances = re.findall(r"'(.*?)'|\"(.*?)\"", dialog_str)
-    cleaned = []
-    for u1, u2 in utterances:
-        text = u1 if u1 else u2
-        cleaned.append(text.strip().lower())
-    return cleaned
+DATA_FILE = "data/greeting_dataset.txt"
 
 
-def load_dialog_pairs(csv_path):
-    df = pd.read_csv(csv_path)
+def load_dialog_pairs(_=None):
+    """
+    Load custom greeting dataset formatted as:
+    [category] input => response
+    """
     pairs = []
 
-    for dialog_str in df["dialog"]:
-        utterances = extract_utterances(dialog_str)
+    if not os.path.exists(DATA_FILE):
+        raise FileNotFoundError(f"{DATA_FILE} not found.")
 
-        for i in range(len(utterances) - 1):
-            input_text = utterances[i]
-            target_text = utterances[i + 1]
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
 
-            if input_text and target_text:
-                pairs.append((input_text, target_text))
+            if not line:
+                continue
+
+            # Remove [category]
+            if line.startswith("["):
+                line = line.split("]", 1)[1].strip()
+
+            if "=>" not in line:
+                continue
+
+            inp, tgt = line.split("=>")
+            inp = inp.strip().lower()
+            tgt = tgt.strip().lower()
+
+            if inp and tgt:
+                pairs.append((inp, tgt))
 
     return pairs
 
 
-def build_vocab(pairs, vocab_size=80000):
+def build_vocab(pairs, vocab_size=15000):
     counter = Counter()
 
     for inp, tgt in pairs:
@@ -81,7 +90,7 @@ def prepare_data(pairs, word2idx, max_len=20):
 
 
 if __name__ == "__main__":
-    pairs = load_dialog_pairs("data/train.csv")
+    pairs = load_dialog_pairs()
     print("Total pairs:", len(pairs))
 
     word2idx, idx2word = build_vocab(pairs)

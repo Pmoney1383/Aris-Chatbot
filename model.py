@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn as nn
 
-
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()
@@ -29,13 +28,13 @@ class TransformerChatModel(nn.Module):
     def __init__(
         self,
         vocab_size,
-        d_model=256,
-        nhead=8,
-        num_encoder_layers=4,
-        num_decoder_layers=4,
-        dim_feedforward=1024,
-        dropout=0.3,
-        pad_idx=0,
+        d_model,
+        nhead,
+        num_encoder_layers,
+        num_decoder_layers,
+        dim_feedforward,
+        dropout,
+        pad_idx,
     ):
         super().__init__()
 

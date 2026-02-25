@@ -21,10 +21,10 @@ model = TransformerChatModel(
     vocab_size=vocab_size,
     d_model=256,
     nhead=8,
-    num_encoder_layers=4,
-    num_decoder_layers=4,
-    dim_feedforward=1024,
-    dropout=0.3,
+    num_encoder_layers=2,
+    num_decoder_layers=2,
+    dim_feedforward=256,
+    dropout=0.0,
     pad_idx=word2idx["<pad>"],
 ).to(DEVICE)
 
