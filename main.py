@@ -9,7 +9,8 @@ import pickle
 import time
 import matplotlib.pyplot as plt
 #from preprocess import load_dialog_pairs, build_vocab, prepare_data
-from custom_preprocess import load_dialog_pairs, build_vocab, prepare_data
+#from custom_preprocess import load_dialog_pairs, build_vocab, prepare_data
+from message_preprocess import load_dialog_pairs, build_vocab, prepare_data
 from model import TransformerChatModel
 
 from rich.progress import ProgressColumn
@@ -30,10 +31,10 @@ class SafeTimeRemainingColumn(ProgressColumn):
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", DEVICE)
 
-MAX_LEN = 20
-BATCH_SIZE = 64
-EPOCHS = 20
-VOCAB_LIMIT = 100
+MAX_LEN = 30
+BATCH_SIZE = 128
+EPOCHS = 35
+VOCAB_LIMIT = 19000
 EARLY_STOP_PATIENCE = 2
 
 
@@ -57,7 +58,7 @@ class ChatDataset(Dataset):
 # LOAD DATA
 # =========================================================
 
-pairs = load_dialog_pairs("data/greeting_dataset.txt")
+pairs = load_dialog_pairs("clean_tagged.txt")
 print("Total dialog pairs:", len(pairs))
 
 word2idx, idx2word = build_vocab(pairs, vocab_size=VOCAB_LIMIT)
@@ -84,12 +85,12 @@ vocab_size = len(word2idx)
 
 model = TransformerChatModel(
     vocab_size=vocab_size,
-    d_model=256,
-    nhead=8,
-    num_encoder_layers=2,
-    num_decoder_layers=2,
-    dim_feedforward=256,
-    dropout=0.0,
+    d_model = 384,
+    nhead = 12,
+    num_encoder_layers = 4,
+    num_decoder_layers = 4,
+    dim_feedforward = 1024,
+    dropout=0.1,
     pad_idx=PAD_IDX,
 ).to(DEVICE)
 
@@ -193,7 +194,7 @@ for epoch in range(EPOCHS):
     train_losses.append(train_loss)
     train_accuracies.append(train_accuracy)
     torch.save(model.state_dict(), "chatbot_model.pt")
-    
+
     print(f"\nEpoch {epoch+1}")
     print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_accuracy:.4f}")
     print("-" * 60)

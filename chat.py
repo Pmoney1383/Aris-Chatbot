@@ -5,7 +5,7 @@ import pickle
 from model import TransformerChatModel
 
 
-MAX_LEN = 20
+MAX_LEN = 30
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -19,12 +19,12 @@ vocab_size = len(word2idx)
 # Load model (must match main.py hyperparams)
 model = TransformerChatModel(
     vocab_size=vocab_size,
-    d_model=256,
-    nhead=8,
-    num_encoder_layers=2,
-    num_decoder_layers=2,
-    dim_feedforward=256,
-    dropout=0.0,
+    d_model = 256,
+    nhead = 8,
+    num_encoder_layers = 4,
+    num_decoder_layers = 4,
+    dim_feedforward = 1024,
+    dropout=0.1,
     pad_idx=word2idx["<pad>"],
 ).to(DEVICE)
 
@@ -43,8 +43,8 @@ def encode_input(text: str) -> torch.Tensor:
 @torch.no_grad()
 def generate_response(
     text: str,
-    temperature: float = 1.0,
-    top_k: int = 20,
+    temperature: float = 0.7,
+    top_k: int = 8,
     min_len: int = 3,
     max_len: int = MAX_LEN,
 ) -> str:

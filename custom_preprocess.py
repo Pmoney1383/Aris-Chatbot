@@ -24,7 +24,22 @@ def load_dialog_pairs(_=None):
 
             # Remove [category]
             if line.startswith("["):
-                line = line.split("]", 1)[1].strip()
+                category = line.split("]", 1)[0][1:]
+                content = line.split("]", 1)[1].strip()
+            else:
+                continue
+
+            if "=>" not in content:
+                continue
+
+            inp, tgt = content.split("=>")
+            inp = inp.strip().lower()
+            tgt = tgt.strip().lower()
+
+            # prepend category token
+            inp = f"<{category}> " + inp
+
+            pairs.append((inp, tgt))
 
             if "=>" not in line:
                 continue

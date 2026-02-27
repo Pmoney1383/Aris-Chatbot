@@ -20,7 +20,7 @@ def main():
     print("Type 'exit' at any time to stop.\n")
 
     while True:
-        category = "greeting"  # For simplicity, we use a single category. You can expand this as needed.
+        category = "casual"  # For simplicity, we use a single category. You can expand this as needed.
 
         pattern = input("Input pattern: ")
         if pattern.lower() == "exit":
