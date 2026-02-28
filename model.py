@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()
@@ -15,26 +16,24 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
 
-        pe = pe.unsqueeze(1)
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
         self.register_buffer("pe", pe)
 
     def forward(self, x):
-        # x shape: (seq_len, batch, d_model)
-        seq_len = x.size(0)
-        return x + self.pe[:seq_len]
+        return x + self.pe[:, :x.size(1)]
 
 
-class TransformerChatModel(nn.Module):
+class DecoderOnlyTransformer(nn.Module):
     def __init__(
         self,
         vocab_size,
-        d_model,
-        nhead,
-        num_encoder_layers,
-        num_decoder_layers,
-        dim_feedforward,
-        dropout,
-        pad_idx,
+        d_model=256,
+        nhead=8,
+        num_layers=4,
+        dim_feedforward=1024,
+        dropout=0.1,
+        pad_idx=0,
+        max_len=512,
     ):
         super().__init__()
 
@@ -42,15 +41,19 @@ class TransformerChatModel(nn.Module):
         self.d_model = d_model
 
         self.embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_idx)
-        self.pos_encoder = PositionalEncoding(d_model)
+        self.pos_encoder = PositionalEncoding(d_model, max_len)
 
-        self.transformer = nn.Transformer(
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
+            batch_first=True
+        )
+
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
         )
 
         self.fc_out = nn.Linear(d_model, vocab_size)
@@ -62,45 +65,31 @@ class TransformerChatModel(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def make_src_padding_mask(self, src):
-        # src: (batch, seq_len)
-        return (src == self.pad_idx)
-
-    def make_tgt_padding_mask(self, tgt):
-        return (tgt == self.pad_idx)
-
-    def forward(self, src, tgt):
-        # src, tgt shape: (batch, seq_len)
-
-        src_mask = None
-
-        tgt_len = tgt.size(1)
-        tgt_mask = torch.triu(
-            torch.ones(tgt_len, tgt_len, device=tgt.device),
+    def generate_causal_mask(self, seq_len, device):
+        mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=device),
             diagonal=1
-        ).bool()
+        )
+        return mask.bool()
 
-        src_padding_mask = self.make_src_padding_mask(src)
-        tgt_padding_mask = self.make_tgt_padding_mask(tgt)
+    def forward(self, x):
+        # x: (batch, seq_len)
 
-        # Convert to (seq_len, batch)
-        src = src.transpose(0, 1)
-        tgt = tgt.transpose(0, 1)
+        seq_len = x.size(1)
 
-        src_emb = self.embedding(src) * math.sqrt(self.d_model)
-        tgt_emb = self.embedding(tgt) * math.sqrt(self.d_model)
+        padding_mask = (x == self.pad_idx)
 
-        src_emb = self.pos_encoder(src_emb)
-        tgt_emb = self.pos_encoder(tgt_emb)
+        x = self.embedding(x) * math.sqrt(self.d_model)
+        x = self.pos_encoder(x)
+
+        causal_mask = self.generate_causal_mask(seq_len, x.device)
 
         output = self.transformer(
-            src_emb,
-            tgt_emb,
-            src_mask=src_mask,
-            tgt_mask=tgt_mask,
-            src_key_padding_mask=src_padding_mask,
-            tgt_key_padding_mask=tgt_padding_mask,
-            memory_key_padding_mask=src_padding_mask,  # IMPORTANT
+            x,
+            mask=causal_mask,
+            src_key_padding_mask=padding_mask
         )
-        output = self.fc_out(output)
-        return output.transpose(0, 1)
+
+        logits = self.fc_out(output)
+
+        return logits

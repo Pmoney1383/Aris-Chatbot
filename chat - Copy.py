@@ -9,7 +9,7 @@ from model import DecoderOnlyTransformer
 # CONFIG
 # =========================================================
 
-MAX_CONTEXT = 50        # how many past tokens model can see
+MAX_CONTEXT = 100        # how many past tokens model can see
 MAX_GENERATE = 25        # max tokens to generate per reply
 TEMPERATURE = 0.6
 TOP_K = 3
@@ -34,9 +34,9 @@ vocab_size = len(word2idx)
 
 model = DecoderOnlyTransformer(
     vocab_size=vocab_size,
-    d_model=512,
-    nhead=16,
-    num_layers=6,
+    d_model=256,
+    nhead=8,
+    num_layers=4,
     dim_feedforward=1024,
     dropout=0.1,
     pad_idx=word2idx["<pad>"],

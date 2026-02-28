@@ -11,11 +11,12 @@ DATA_FILE = "clean_tagged.txt"
 # LOAD DIALOGUE PAIRS FROM CLEAN TAGGED FILE
 # =========================================================
 
-def load_dialog_pairs(_=None):
+def load_dialog_stream():
     """
-    Loads dialogue pairs from clean_tagged.txt formatted as:
-    <me> message
-    <other> message
+    Loads dialogue as a continuous token stream:
+    <me> message <eot>
+    <other> message <eot>
+    Double texting by same speaker is merged.
     """
 
     if not os.path.exists(DATA_FILE):
@@ -30,96 +31,65 @@ def load_dialog_pairs(_=None):
                 continue
 
             if line.startswith("<me>"):
-                speaker = "me"
+                speaker = "<me>"
                 msg = line.replace("<me>", "", 1).strip()
             elif line.startswith("<other>"):
-                speaker = "other"
+                speaker = "<other>"
                 msg = line.replace("<other>", "", 1).strip()
             else:
                 continue
 
-            # normalize spacing
-            msg = re.sub(r"\s+", " ", msg)
-            msg = msg.strip()
+            msg = re.sub(r"\s+", " ", msg).strip().lower()
 
             if msg:
                 messages.append((speaker, msg))
 
-    # =====================================================
-    # CREATE DIALOGUE PAIRS (me -> other or other -> me)
-    # =====================================================
+    # Merge consecutive same-speaker messages
+    merged = []
+    for speaker, msg in messages:
+        if merged and merged[-1][0] == speaker:
+            merged[-1] = (speaker, merged[-1][1] + " " + msg)
+        else:
+            merged.append((speaker, msg))
 
-    pairs = []
+    # Build stream with <eot>
+    stream = []
+    for speaker, msg in merged:
+        stream.append(speaker)
+        stream.extend(msg.split())
+        stream.append("<eot>")
 
-    for i in range(len(messages) - 1):
-        speaker1, msg1 = messages[i]
-        speaker2, msg2 = messages[i + 1]
-
-        # Only create pair if speakers alternate
-        if speaker1 != speaker2:
-            pairs.append((msg1.lower(), msg2.lower()))
-
-    return pairs
+    return stream
 
 
 # =========================================================
 # BUILD VOCAB
 # =========================================================
 
-def build_vocab(pairs, vocab_size=19000):
-    counter = Counter()
-
-    for inp, tgt in pairs:
-        counter.update(inp.split())
-        counter.update(tgt.split())
+def build_vocab_from_stream(stream, vocab_size=19000):
+    counter = Counter(stream)
 
     print("Total unique tokens before limit:", len(counter))
-    most_common = counter.most_common(vocab_size - 4)
 
     word2idx = {
         "<pad>": 0,
         "<unk>": 1,
-        "<start>": 2,
-        "<end>": 3
+        "<eot>": 2,
+        "<me>": 3,
+        "<other>": 4
     }
 
+    most_common = counter.most_common(vocab_size - len(word2idx))
+
     for word, _ in most_common:
-        word2idx[word] = len(word2idx)
+        if word not in word2idx:
+            word2idx[word] = len(word2idx)
 
     idx2word = {idx: word for word, idx in word2idx.items()}
-    print("Final vocabulary size (after limit):", len(word2idx))
+
+    print("Final vocabulary size:", len(word2idx))
 
     return word2idx, idx2word
-
-
-# =========================================================
-# ENCODING
-# =========================================================
-
-def encode_sentence(sentence, word2idx, max_len):
-    tokens = sentence.split()
-    ids = [word2idx.get(word, word2idx["<unk>"]) for word in tokens]
-
-    ids = ids[:max_len]
-    ids += [word2idx["<pad>"]] * (max_len - len(ids))
-
-    return ids
-
-
-def prepare_data(pairs, word2idx, max_len=20):
-    inputs = []
-    targets = []
-
-    for inp, tgt in pairs:
-        tgt = "<start> " + tgt + " <end>"
-
-        input_ids = encode_sentence(inp, word2idx, max_len)
-        target_ids = encode_sentence(tgt, word2idx, max_len)
-
-        inputs.append(input_ids)
-        targets.append(target_ids)
-
-    return inputs, targets
 
 
 # =========================================================
@@ -127,44 +97,26 @@ def prepare_data(pairs, word2idx, max_len=20):
 # =========================================================
 
 if __name__ == "__main__":
-    pairs = load_dialog_pairs()
-    print("Total dialogue pairs:", len(pairs))
 
-    # ================= LENGTH ANALYSIS =================
+    stream = load_dialog_stream()
 
-    input_lengths = []
-    target_lengths = []
+    print("Total tokens in stream:", len(stream))
+    print("First 40 tokens:", stream[:40])
 
-    for inp, tgt in pairs:
-        input_lengths.append(len(inp.split()))
-        target_lengths.append(len(tgt.split()))
+    word2idx, idx2word = build_vocab_from_stream(stream)
 
-    avg_input = sum(input_lengths) / len(input_lengths)
-    avg_target = sum(target_lengths) / len(target_lengths)
+    # Encode full stream
+    encoded_stream = [
+        word2idx.get(token, word2idx["<unk>"])
+        for token in stream
+    ]
 
-    max_input = max(input_lengths)
-    max_target = max(target_lengths)
-
-    print("\n===== LENGTH STATS =====")
-    print(f"Average input length:  {avg_input:.2f} tokens")
-    print(f"Average target length: {avg_target:.2f} tokens")
-    print(f"Max input length:      {max_input}")
-    print(f"Max target length:     {max_target}")
-    
-
-    p95_input = np.percentile(input_lengths, 95)
-    p95_target = np.percentile(target_lengths, 95)
-
-    print(f"95th percentile input length:  {p95_input:.0f}")
-    print(f"95th percentile target length: {p95_target:.0f}")
-    word2idx, idx2word = build_vocab(pairs)
-    inputs, targets = prepare_data(pairs, word2idx)
-
-    print("Sample input:", pairs[0])
-    print("Encoded input:", inputs[0])
-    print("Encoded target:", targets[0])
+    print("First 40 encoded tokens:", encoded_stream[:40])
 
     with open("vocab.pkl", "wb") as f:
         pickle.dump((word2idx, idx2word), f)
 
-    print("Vocab saved.")
+    with open("encoded_stream.pkl", "wb") as f:
+        pickle.dump(encoded_stream, f)
+
+    print("Preprocessing complete.")
