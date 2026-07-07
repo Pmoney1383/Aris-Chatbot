@@ -1,0 +1,14 @@
+# IMPORTANT: torch MUST be installed with CUDA support via the CUDA 12.8 index,
+# NOT plain `pip install torch` (which gives you the CPU-only wheel on Windows):
+#
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+#
+# Then install the rest with: pip install -r requirements.txt
+
+torch>=2.9
+tiktoken>=0.8
+datasets>=3.0
+rich>=13.0
+matplotlib>=3.8
+numpy>=1.26
+bitsandbytes>=0.45   # not used until Stage B+ (8-bit Adam); safe to skip if install fails

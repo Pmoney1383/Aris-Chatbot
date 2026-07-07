@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import torch; print\\(torch.__version__, torch.cuda.is_available\\(\\)\\)\")",
+      "Bash(py -0p)",
+      "Bash(where python *)",
+      "Bash(git mv *)",
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "Bash(.venv/Scripts/python.exe -m pip install --upgrade pip)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(ls checkpoints/)",
+      "Bash(rm -f checkpoints/ckpt_000000.pt)",
+      "Bash(nvidia-smi *)",
+      "Bash(tasklist)",
+      "Bash(ls -la checkpoints/ logs/)",
+      "Bash(tail -5 logs/loss_log.csv)",
+      "Bash(wmic process *)",
+      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,StartTime,Path\")",
+      "Bash(exit 0 *)",
+      "Read(//c/Users/amirp/Documents/Git Projects/Aris-Chatbot/**)",
+      "Bash(powershell -Command \"\\(Get-Item 'C:\\\\Users\\\\amirp\\\\Documents\\\\Git Projects\\\\Aris-Chatbot\\\\logs\\\\loss_log.csv'\\).LastWriteTime\")"
+    ]
+  }
+}

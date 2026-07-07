@@ -4,44 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Aris is a small decoder-only transformer chatbot (PyTorch) trained on personal iMessage-style chat logs. It is a learning project, not a production system — there is no test suite, no build step, and no package manifest (dependencies are installed ad hoc: `torch`, `torchinfo`, `rich`, `matplotlib`, `pandas`, `numpy`).
+Aris is a from-scratch LLM training project. Stage 0 (current): pretrain a 124M GPT-2-style decoder-only transformer on FineWeb-Edu (sample-10BT, ~1.5B token budget) on a single RTX 5080 (16GB, CUDA 12.8). Later stages (see `TRAINING_PLAN.md`) add architectural upgrades (RoPE, RMSNorm, SwiGLU), a custom tokenizer, and SFT on the user's personal iMessage logs to turn the base model into a chatbot.
 
-The model has evolved from an old seq2seq/DailyDialog design (see commit history) to the current setup: a GPT-style decoder-only transformer trained on a continuous token stream of the user's own messages.
+All Python runs through the local venv: `.venv/Scripts/python.exe` (Python 3.14, torch cu128). Torch must be installed from the cu128 index (see `requirements.txt` header) — plain `pip install torch` gives the CPU wheel.
 
 ## Commands
 
-There is no build/lint/test tooling. The workflow is entirely script-driven:
+- `.venv/Scripts/python.exe scripts/prepare_data.py` — streams FineWeb-Edu, tokenizes with tiktoken gpt2, writes uint16 shards to `data/shards/` (resumable; skips complete shards).
+- `.venv/Scripts/python.exe scripts/train.py` — trains from shards; auto-resumes from the latest checkpoint in `checkpoints/`; logs to `logs/loss_log.csv`; prints sample continuations at the end. Ctrl+C saves a checkpoint before exiting.
+- `.venv/Scripts/python.exe scripts/chat.py` — text-continuation REPL against the latest checkpoint. This is a base model, not a chatbot (no chat behavior until SFT).
+- `.venv/Scripts/python.exe scripts/message_cleaner.py` — cleans a raw iMessage export from `data/raw/` into `data/raw/clean_tagged.txt` (edit `INPUT_FILE` first). Not part of Stage 0 training; used in the SFT stage later.
 
-- `python main.py` — trains the model end-to-end: loads `clean_tagged.txt` via `message_preprocess.py`, builds the vocab, trains `DecoderOnlyTransformer`, saves `chatbot_model.pt` and `vocab.pkl`, and writes `loss_curve.png` / `accuracy_curve.png`.
-- `python chat.py` — loads `vocab.pkl` + `chatbot_model.pt` and starts an interactive REPL chat loop (type `exit` to quit).
-- `python message_cleaner.py` — one-off ETL: reads a raw exported chat log (`data/+<phone>.txt`), strips timestamps/junk/media placeholders, tags each line `<me>`/`<other>`, merges consecutive same-speaker lines, and writes `clean_tagged.txt`. Edit `INPUT_FILE` at the top before running.
-- `python message_preprocess.py` — standalone smoke test of the stream-loading/vocab-building pipeline used by `main.py` (prints token counts, doesn't train anything).
-
-`create_dataset.py` and `custom_preprocess.py` / `preprocess.py` are earlier, now-unused pipelines (custom greeting pairs dataset, and DailyDialog CSV pairs dataset respectively) kept around from prior iterations — do not wire new work through them unless explicitly asked to revive that approach.
-
-Files/folders suffixed `- Copy` (e.g. `chat - Copy.py`, `vocab - Copy.pkl`) are manual backups the user made before an experiment; leave them alone unless asked to clean up.
+There is no test suite; verification is done by running the scripts (a smoke test pattern: instantiate the model, check ~124M params, forward/backward one batch).
 
 ## Architecture
 
-**Data pipeline** (`message_cleaner.py` → `clean_tagged.txt` → `message_preprocess.py`):
-1. `message_cleaner.py` converts a raw exported conversation into `clean_tagged.txt`, one line per merged turn, formatted as `<me> message text` / `<other> message text`.
-2. `message_preprocess.py::load_dialog_stream()` reads that file and flattens the whole conversation into a **single continuous token stream**: `<speaker> word word ... <eot> <speaker> word ... <eot> ...`. This is not a pairs dataset — there's no fixed input/target split at load time.
-3. `build_vocab_from_stream()` builds a frequency-capped vocab (default 19000 in `main.py`) with fixed special tokens `<pad>=0, <unk>=1, <eot>=2, <me>=3, <other>=4`.
+- **`src/config.py` is the single source of truth for hyperparameters** (`ModelConfig`, `TrainConfig`, `GenerationConfig`). Never hardcode a hyperparameter in a script — add it to config and import it. Checkpoints store `model_config` so `chat.py` reconstructs the exact architecture from the checkpoint, not from the current config.
+- **`src/model.py`** — hand-written GPT-2 style transformer: manual attention blocks using `F.scaled_dot_product_attention(is_causal=True)` (FlashAttention on CUDA), pre-norm LayerNorm, GELU FFN, learned positional embeddings, tied input/output embeddings, GPT-2 init (std 0.02, residual projections scaled `1/sqrt(2*n_layers)` via the `IS_RESIDUAL_PROJ` flag). `forward(input_ids, targets=None)` returns `(logits, loss)`.
+- **`src/dataset.py`** — `ShardedDataset` memmaps `shard_*.bin` files (flat uint16 token ids) and yields non-overlapping `(input, target)` windows shifted by one token; windows don't cross shard boundaries. `__getstate__` drops memmap handles so `DataLoader(num_workers>0)` works. Train/val split is by shard (last shards = val).
+- **`scripts/train.py`** — bf16 autocast, `torch.compile` with eager fallback, AdamW, manual cosine LR schedule with linear warmup, gradient accumulation (`grad_accum_steps`), grad clipping. Checkpoints (`ckpt_{step:06d}.pt`) contain model + optimizer state + step + config, saved every `save_every` steps and on exit/interrupt; resume is automatic from the newest one.
 
-**Training** (`main.py`):
-- The token stream is turned into training examples via a sliding window (`StreamDataset` in `main.py`): for window size `MAX_LEN`, input is `data[i:i+MAX_LEN]` and target is `data[i+1:i+MAX_LEN+1]` — standard next-token-prediction over the whole conversation, not per-turn seq2seq.
-- Train/val split is a random 90/10 split over windows (not a chronological split).
-- Model: `DecoderOnlyTransformer` (`model.py`) — an `nn.TransformerEncoder` used autoregressively with a causal mask plus a padding mask, sinusoidal positional encoding, tied vocab-size output projection. This is a GPT-style architecture despite using `TransformerEncoderLayer` internally (there's no separate encoder/decoder).
-- Loss is cross-entropy ignoring `<pad>`, with label smoothing; accuracy is computed over non-pad tokens only.
-- Checkpoints save every epoch to `chatbot_model.pt` (overwritten each time, no versioning). Vocab is saved once at the end to `vocab.pkl`. Model hyperparameters (`d_model`, `nhead`, `num_layers`, etc.) are duplicated by hand in `main.py` and `chat.py` — if you change one, update the other or loading will fail via shape mismatch in `load_state_dict`.
+## Repo layout notes
 
-**Inference** (`chat.py`):
-- Conversation history is kept as a flat list of token ids (same `<speaker> ... <eot>` scheme as training), trimmed to `MAX_CONTEXT` tokens, snapping to the nearest `<eot>` boundary when trimming.
-- Generation is autoregressive, one token at a time, with temperature scaling, top-k sampling, and a repetition penalty applied over the last 20 generated tokens. Generation stops early if the model emits `<eot>` (i.e., tries to end its turn).
-- The user's turn is wrapped as `<me> ... <eot> <other>` before generation, so the model is explicitly cued whose turn it is next.
-
-## Working in this repo
-
-- `MAX_LEN`/`MAX_CONTEXT`, `d_model`, `nhead`, `num_layers`, `dim_feedforward`, and `pad_idx` must match between whatever produced `chatbot_model.pt` and whatever loads it (`main.py` vs `chat.py`). When changing model architecture, update both files together.
-- The vocab is derived from the training corpus and vocab-size is a training hyperparameter (`VOCAB_LIMIT` in `main.py`) — regenerating `clean_tagged.txt` or changing `VOCAB_LIMIT` invalidates old checkpoints and `vocab.pkl`.
-- `clean_tagged.txt`, `vocab.pkl`, `encoded_stream.pkl`, and any `data/` chat exports contain the user's real personal message history — treat as sensitive, don't print full contents or commit new exports carelessly.
+- `archive/` holds the entire pre-Stage-0 project (old seq2seq/decoder chatbot trained directly on iMessage logs: `main_old.py`, `model_old.py`, `chat_old.py`, unused preprocess pipelines, `*.pkl`, `- Copy` backups). Reference only — don't wire new code into it.
+- `data/` is gitignored. `data/raw/` contains the user's real personal message history (`clean_tagged.txt`, phone-number-named exports) — treat as sensitive, never print full contents or commit it.
+- `checkpoints/`, `logs/`, `data/shards/` are generated artifacts, gitignored, and created by the scripts themselves.
