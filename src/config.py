@@ -12,13 +12,14 @@ ROOT = Path(__file__).parent.parent  # project root
 @dataclass
 class ModelConfig:
     vocab_size: int = 50257          # tiktoken gpt2 vocab
-    d_model: int = 768
-    n_heads: int = 12
-    n_layers: int = 12
-    d_ff: int = 3072                 # 4 * d_model
-    max_seq_len: int = 512
-    dropout: float = 0.1
+    d_model: int = 1280
+    n_heads: int = 20                # head_dim 64
+    n_layers: int = 24
+    max_seq_len: int = 1024
+    dropout: float = 0.0             # dropout hurts at this scale, disable it
     pad_idx: int = 0                 # not used by tiktoken but kept for compat
+    # SwiGLU FFN hidden dim is computed from d_model in src/model.py:
+    # int(2/3 * 4 * d_model) rounded to the nearest multiple of 256.
 
 
 @dataclass
@@ -31,26 +32,44 @@ class TrainConfig:
     # Data
     dataset_name: str = "HuggingFaceFW/fineweb-edu"
     dataset_split: str = "sample-10BT"   # ~10B token pre-sampled subset
-    token_budget: int = 1_500_000_000    # 1.5B tokens for Stage 0
+    token_budget: int = 5_000_000_000    # 5B tokens for Stage B
     shard_size: int = 100_000_000        # 100M tokens per shard (uint16 = ~200MB each)
 
+    # Stage B diversity mix (80% web / 10% books / 10% conversational).
+    # Budgets are per source; weights drive train-time shard sampling.
+    fineweb_token_budget: int = 4_000_000_000
+    books_token_budget: int = 500_000_000
+    conv_token_budget: int = 500_000_000
+    # parquet mirror of deepmind/pg19 (the original uses a legacy loading
+    # script that datasets>=3 refuses to run)
+    books_dataset_name: str = "emozilla/pg19"
+    conv_dataset_name: str = "allenai/soda"
+    # FineWeb tokens already consumed by Stage 0 — fast-forward past them so
+    # Stage B pulls fresh documents from the stream.
+    fineweb_skip_tokens: int = 1_500_000_000
+    source_weights: dict = field(default_factory=lambda: {
+        "fineweb": 0.8,
+        "books": 0.1,
+        "conv": 0.1,
+    })
+
     # Training
-    batch_size: int = 12                 # micro-batch; 5080 BF16 hits a perf cliff above this
-    grad_accum_steps: int = 96           # effective batch ~0.75M tokens
-    max_lr: float = 6e-4
-    min_lr: float = 6e-5
-    warmup_steps: int = 500
-    max_steps: int = 1908               # ~1.5B tokens at batch 8, accum 96, seq 1024
+    batch_size: int = 4                  # smaller micro-batch for the larger model
+    grad_accum_steps: int = 128          # effective batch ~0.5M tokens
+    max_lr: float = 3e-4                 # lower LR for larger model
+    min_lr: float = 3e-5
+    warmup_steps: int = 1000
+    max_steps: int = 9500                # 9500 * 0.5M = ~4.75B tokens
     weight_decay: float = 0.1
     grad_clip: float = 1.0
-    train_acc_every: int = 10           # full-vocab argmax is expensive; sample it
-    compile_model: bool = True          # default inductor backend: Triton kernel fusion
-    amp_dtype: str = "float16"          # faster than bfloat16 on this 5080/PyTorch stack
-    fused_optimizer: bool = True        # small measured speedup when supported
+    train_acc_every: int = 10            # full-vocab argmax is expensive; sample it
+    compile_model: bool = True           # default inductor backend: Triton kernel fusion
+    amp_dtype: str = "bfloat16"          # bfloat16 — stable, no GradScaler needed
+    fused_optimizer: bool = True         # small measured speedup when supported
 
     # Checkpointing / eval
-    save_every: int = 300                # save checkpoint every N steps
-    eval_every: int = 50                # run val loss every N steps
+    save_every: int = 500                # save checkpoint every N steps
+    eval_every: int = 100                # run val loss every N steps
     val_fraction: float = 0.005          # fraction of shards held out for val
     val_batches: int = 20                # fixed number of val batches per eval
 

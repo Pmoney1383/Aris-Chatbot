@@ -1,8 +1,11 @@
-"""Stage 0 training loop for Aris.
+"""Stage B training loop for Aris.
 
-- configurable mixed precision, torch.compile (graceful fallback), AdamW
+- bfloat16 autocast (no GradScaler), torch.compile (graceful fallback)
+- 8-bit AdamW via bitsandbytes when available (fused AdamW fallback)
+- gradient checkpointing on every transformer block
 - cosine LR schedule with linear warmup
 - gradient accumulation, gradient clipping
+- source-weighted shard sampling (80% fineweb / 10% books / 10% conv)
 - checkpoint save/resume, CSV loss logging, rich live display
 - prints sample continuations at the end
 """
@@ -24,7 +27,7 @@ from rich.live import Live
 from rich.table import Table
 
 from src.config import GenerationConfig, ModelConfig, TrainConfig
-from src.dataset import ShardedDataset, split_shards
+from src.dataset import ShardedDataset, make_weighted_sampler, split_shards
 from src.model import DecoderOnlyTransformer
 
 console = Console()
@@ -67,13 +70,12 @@ def latest_checkpoint(ckpt_dir: Path):
     return ckpts[-1] if ckpts else None
 
 
-def save_checkpoint(ckpt_dir, raw_model, optimizer, step, loss, model_cfg, scaler=None):
+def save_checkpoint(ckpt_dir, raw_model, optimizer, step, loss, model_cfg):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     path = ckpt_dir / f"ckpt_{step:06d}.pt"
     torch.save({
         "model": raw_model.state_dict(),
         "optimizer": optimizer.state_dict(),
-        "scaler": scaler.state_dict() if scaler is not None else None,
         "step": step,
         "loss": loss,
         "model_config": model_cfg.__dict__,
@@ -151,7 +153,7 @@ def main():
     cfg = TrainConfig()
     gen_cfg = GenerationConfig()
 
-    assert torch.cuda.is_available(), "CUDA GPU required for Stage 0 training."
+    assert torch.cuda.is_available(), "CUDA GPU required for Stage B training."
     device = "cuda"
     torch.set_float32_matmul_precision("high")
     amp_dtype = get_amp_dtype(cfg.amp_dtype)
@@ -161,14 +163,17 @@ def main():
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- data ----
-    train_shards, val_shards = split_shards(cfg.shard_dir, cfg.val_fraction)
+    train_shards, val_shards = split_shards(
+        cfg.shard_dir, cfg.val_fraction, cfg.source_weights
+    )
     console.print(f"Shards: {len(train_shards)} train / {len(val_shards)} val")
 
     train_ds = ShardedDataset(train_shards, model_cfg.max_seq_len)
     val_ds = ShardedDataset(val_shards, model_cfg.max_seq_len)
 
+    train_sampler = make_weighted_sampler(train_ds, cfg.source_weights)
     train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=True,
+        train_ds, batch_size=cfg.batch_size, sampler=train_sampler,
         num_workers=cfg.num_workers, pin_memory=True, drop_last=True,
         persistent_workers=cfg.num_workers > 0,
     )
@@ -180,24 +185,28 @@ def main():
     # ---- model ----
     raw_model = DecoderOnlyTransformer(model_cfg).to(device)
     raw_model.get_num_params()
+    raw_model.gradient_checkpointing_enable()
+    console.print("Gradient checkpointing: enabled")
 
-    optimizer_kwargs = {
-        "lr": cfg.max_lr,
-        "betas": (0.9, 0.95),
-        "weight_decay": cfg.weight_decay,
-    }
-    if cfg.fused_optimizer:
-        optimizer_kwargs["fused"] = True
+    # 8-bit Adam keeps optimizer state ~1GB instead of ~4GB at this scale
     try:
-        optimizer = torch.optim.AdamW(raw_model.parameters(), **optimizer_kwargs)
-    except TypeError:
-        optimizer_kwargs.pop("fused", None)
-        optimizer = torch.optim.AdamW(raw_model.parameters(), **optimizer_kwargs)
-        console.print("[yellow]fused AdamW unavailable; using standard AdamW[/]")
-    else:
-        console.print("Optimizer: AdamW fused" if cfg.fused_optimizer else "Optimizer: AdamW")
-
-    scaler = torch.amp.GradScaler(device="cuda", enabled=(amp_dtype is torch.float16))
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(
+            raw_model.parameters(),
+            lr=cfg.max_lr,
+            betas=(0.9, 0.95),
+            weight_decay=cfg.weight_decay,
+        )
+        console.print("Optimizer: AdamW 8-bit (bitsandbytes)")
+    except ImportError:
+        optimizer = torch.optim.AdamW(
+            raw_model.parameters(),
+            lr=cfg.max_lr,
+            betas=(0.9, 0.95),
+            weight_decay=cfg.weight_decay,
+            fused=cfg.fused_optimizer,
+        )
+        console.print("Optimizer: AdamW (bitsandbytes not available)")
 
     # ---- resume ----
     start_step = 0
@@ -206,8 +215,6 @@ def main():
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         raw_model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
-        if ckpt.get("scaler") is not None:
-            scaler.load_state_dict(ckpt["scaler"])
         start_step = ckpt["step"]
         console.print(f"[bold yellow]Resuming from {ckpt_path.name} "
                       f"at step {start_step} (loss {ckpt['loss']:.4f})[/]")
@@ -310,7 +317,7 @@ def main():
                         logits, loss = model(x, y)
                     loss = loss / cfg.grad_accum_steps
                     loss_accum += loss.item()
-                    scaler.scale(loss).backward()
+                    loss.backward()
 
                     if measure_train_acc:
                         with torch.no_grad():
@@ -318,10 +325,8 @@ def main():
                             correct += (preds == y).sum().item()
                             total += y.numel()
 
-                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
 
                 step += 1
                 tokens_seen += tokens_per_step
@@ -354,7 +359,7 @@ def main():
 
                 if step % cfg.save_every == 0:
                     save_checkpoint(cfg.checkpoint_dir, raw_model, optimizer,
-                                    step, loss_accum, model_cfg, scaler)
+                                    step, loss_accum, model_cfg)
 
                 live.update(status_table(step, loss_accum, train_acc, val_loss, val_acc,
                                          lr, tps, step_time, eta_seconds))
@@ -364,7 +369,7 @@ def main():
 
     finally:
         path = save_checkpoint(cfg.checkpoint_dir, raw_model, optimizer,
-                               step, last_loss, model_cfg, scaler)
+                               step, last_loss, model_cfg)
         console.print(f"Final checkpoint: {path}")
         log_file.close()
 
