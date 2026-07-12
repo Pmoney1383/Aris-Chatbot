@@ -98,8 +98,8 @@ class SFTConfig:
     shard_size: int = 25_000_000              # tokens per SFT shard (uint16 ~50MB)
 
     # Training
-    batch_size: int = 8                       # no grad checkpointing needed at SFT batch sizes
-    grad_accum_steps: int = 16                # effective batch ~131k tokens
+    batch_size: int = 4                       # micro-batch 1 to fit in 16GB VRAM (no shared-memory spill)
+    grad_accum_steps: int = 32                # effective batch ~33k tokens
     max_lr: float = 5e-5                      # steering, not training from scratch
     min_lr: float = 5e-6
     warmup_steps: int = 100
@@ -107,7 +107,7 @@ class SFTConfig:
     weight_decay: float = 0.1
     grad_clip: float = 1.0
     train_acc_every: int = 10
-    compile_model: bool = True
+    compile_model: bool = False               # recompiles blow past 16GB with checkpointing; eager is safer here
     amp_dtype: str = "bfloat16"
     fused_optimizer: bool = True
 

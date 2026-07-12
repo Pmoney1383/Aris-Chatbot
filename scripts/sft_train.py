@@ -5,7 +5,7 @@ Differences from pretraining (scripts/train.py, which stays untouched):
 - trains on paired token/mask shards from data/sft_shards/
 - masked loss: only assistant-turn tokens contribute to the gradient
 - much lower LR (5e-5 -> 5e-6), short warmup (100), few steps (3000)
-- no gradient checkpointing (SFT batches are small enough)
+- gradient checkpointing enabled (keeps activations inside 16GB dedicated VRAM)
 - checkpoints to checkpoints/sft/
 
 --persona: tiny second pass on data/raw/clean_tagged_persona.txt (the user's
@@ -289,6 +289,8 @@ def main():
     # ---- model ----
     raw_model = DecoderOnlyTransformer(model_cfg).to(device)
     raw_model.get_num_params()
+    raw_model.gradient_checkpointing_enable()
+    console.print("Gradient checkpointing: enabled")
 
     # 8-bit Adam keeps optimizer state small (same as pretraining)
     try:
