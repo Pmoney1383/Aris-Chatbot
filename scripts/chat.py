@@ -1,7 +1,11 @@
-"""Stage 0 inference REPL — text continuation with the base model.
+"""Conversation REPL for the SFT'd Aris chatbot.
 
-NOT a chatbot yet: the base model just continues whatever text you type.
-Speaker tokens / conversation handling come after SFT.
+Loads the newest checkpoint from checkpoints/sft/ (falls back to checkpoints/
+if SFT hasn't run yet). Keeps the running conversation as a flat token id
+list, formats each user message with the chat template from src/chat_format.py,
+and stops generation at the <|eot|> delimiter.
+
+Commands: `clear` resets the conversation, `exit` / `quit` leave.
 """
 
 import sys
@@ -9,27 +13,35 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import tiktoken
 import torch
 import torch.nn.functional as F
 from rich.console import Console
 
-from src.config import GenerationConfig, ModelConfig, TrainConfig
+from src.chat_format import EOT_IDS, NEWLINE_IDS, encode_chat_prompt, get_encoding
+from src.config import GenerationConfig, ModelConfig, SFTConfig
 from src.model import DecoderOnlyTransformer
 
 console = Console()
 
+HISTORY_LIMIT = 1024  # trim conversation history beyond this many tokens
+
 
 def load_model(device):
-    cfg = TrainConfig()
+    cfg = SFTConfig()
     ckpts = sorted(cfg.checkpoint_dir.glob("ckpt_*.pt"))
     if not ckpts:
-        console.print("[red]No checkpoints found in checkpoints/. "
-                      "Run scripts/train.py first.[/]")
+        ckpts = sorted(cfg.pretrain_checkpoint_dir.glob("ckpt_*.pt"))
+        if ckpts:
+            console.print("[yellow]No SFT checkpoint yet — using the base "
+                          "model from checkpoints/ (expect raw continuations, "
+                          "not chat).[/]")
+    if not ckpts:
+        console.print("[red]No checkpoints found. Run scripts/sft_train.py "
+                      "(or scripts/train.py) first.[/]")
         sys.exit(1)
 
     ckpt_path = ckpts[-1]
-    console.print(f"Loading [bold]{ckpt_path.name}[/]...")
+    console.print(f"Loading [bold]{ckpt_path}[/]...")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     model_cfg = ModelConfig(**ckpt["model_config"])
@@ -40,10 +52,29 @@ def load_model(device):
     return model
 
 
+def trim_history(history: list[int]) -> list[int]:
+    """Keep the most recent <= HISTORY_LIMIT tokens, cutting only at <|eot|>
+    boundaries so a turn is never split mid-way."""
+    if len(history) <= HISTORY_LIMIT:
+        return history
+
+    # candidate cut points: just after each <|eot|> (plus its newline)
+    n = len(EOT_IDS)
+    for i in range(len(history) - n + 1):
+        if history[i : i + n] == EOT_IDS:
+            end = i + n
+            if history[end : end + len(NEWLINE_IDS)] == NEWLINE_IDS:
+                end += len(NEWLINE_IDS)
+            if len(history) - end <= HISTORY_LIMIT:
+                return history[end:]
+    # no boundary leaves us under the limit (single huge turn): hard trim
+    return history[-HISTORY_LIMIT:]
+
+
 @torch.no_grad()
-def generate(model, enc, prompt_ids, device, gen_cfg: GenerationConfig):
-    stop_ids = enc.encode_ordinary("\n\n")
-    x = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+def generate(model, context_ids, device, gen_cfg: GenerationConfig):
+    """Generate until <|eot|> (returned WITHOUT the eot sequence)."""
+    x = torch.tensor([context_ids], dtype=torch.long, device=device)
     generated = []
 
     for _ in range(gen_cfg.max_new_tokens):
@@ -67,9 +98,8 @@ def generate(model, enc, prompt_ids, device, gen_cfg: GenerationConfig):
         generated.append(next_tok.item())
         x = torch.cat([x, next_tok], dim=1)
 
-        # stop on "\n\n" (either as a single token or as the tail of generation)
-        if generated[-len(stop_ids):] == stop_ids or "\n\n" in enc.decode(generated[-2:]):
-            break
+        if generated[-len(EOT_IDS):] == EOT_IDS:
+            return generated[: -len(EOT_IDS)]
 
     return generated
 
@@ -78,32 +108,40 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     console.print(f"Device: {device}")
 
-    console.print(
-        "\n[bold yellow]NOTE:[/] this is a BASE model — it does text continuation, "
-        "not conversation.\nType a sentence and the model will continue it. "
-        "Don't expect it to answer questions or chat.\n"
-        "Type 'exit' or 'quit' to leave.\n"
-    )
-
     model = load_model(device)
-    enc = tiktoken.get_encoding("gpt2")
+    enc = get_encoding()
     gen_cfg = GenerationConfig()
+
+    console.print("\nChat with Aris. Commands: [bold]clear[/] resets the "
+                  "conversation, [bold]exit[/]/[bold]quit[/] leave.\n")
+
+    history: list[int] = []  # flat token ids of the whole conversation
 
     while True:
         try:
-            prompt = console.input("[bold cyan]prompt> [/]").strip()
+            user_text = console.input("[bold cyan]you> [/]").strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if prompt.lower() in ("exit", "quit"):
+        if user_text.lower() in ("exit", "quit"):
             break
-        if not prompt:
+        if user_text.lower() == "clear":
+            history = []
+            console.print("[dim]conversation cleared[/]\n")
+            continue
+        if not user_text:
             continue
 
-        prompt_ids = enc.encode_ordinary(prompt)
-        out_ids = generate(model, enc, prompt_ids, device, gen_cfg)
+        history.extend(encode_chat_prompt(user_text))
+        history = trim_history(history)
 
-        console.print(f"[cyan]{prompt}[/]", end="")
-        console.print(f"[green]{enc.decode(out_ids)}[/]\n")
+        reply_ids = generate(model, history, device, gen_cfg)
+        reply = enc.decode(reply_ids).strip()
+
+        # record the full assistant turn (with eot) so the template stays intact
+        history.extend(reply_ids + EOT_IDS + NEWLINE_IDS)
+        history = trim_history(history)
+
+        console.print(f"[white]{reply}[/]\n")
 
 
 if __name__ == "__main__":

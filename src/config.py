@@ -78,6 +78,61 @@ class TrainConfig:
 
 
 @dataclass
+class SFTConfig:
+    """Supervised fine-tuning (chat) stage. Separate from TrainConfig so the
+    pretraining setup stays untouched."""
+
+    # Paths
+    shard_dir: Path = field(default_factory=lambda: ROOT / "data" / "sft_shards")
+    pretrain_checkpoint_dir: Path = field(default_factory=lambda: ROOT / "checkpoints")
+    checkpoint_dir: Path = field(default_factory=lambda: ROOT / "checkpoints" / "sft")
+    log_dir: Path = field(default_factory=lambda: ROOT / "logs")
+    log_name: str = "sft_loss_log.csv"
+
+    # Data sources
+    oasst1_dataset: str = "OpenAssistant/oasst1"
+    oasst2_dataset: str = "OpenAssistant/oasst2"
+    wildchat_dataset: str = "allenai/WildChat-1M"
+    wildchat_token_budget: int = 300_000_000  # cap the (huge) WildChat stream
+    max_conversation_tokens: int = 8192       # skip degenerate mega-conversations
+    shard_size: int = 25_000_000              # tokens per SFT shard (uint16 ~50MB)
+
+    # Training
+    batch_size: int = 8                       # no grad checkpointing needed at SFT batch sizes
+    grad_accum_steps: int = 16                # effective batch ~131k tokens
+    max_lr: float = 5e-5                      # steering, not training from scratch
+    min_lr: float = 5e-6
+    warmup_steps: int = 100
+    max_steps: int = 3000
+    weight_decay: float = 0.1
+    grad_clip: float = 1.0
+    train_acc_every: int = 10
+    compile_model: bool = True
+    amp_dtype: str = "bfloat16"
+    fused_optimizer: bool = True
+
+    # Checkpointing / eval
+    save_every: int = 250
+    eval_every: int = 100
+    val_batches: int = 20
+
+    # DataLoader
+    num_workers: int = 2
+
+    # Persona pass (--persona): tiny second SFT on the user's own messages
+    persona_file: Path = field(
+        default_factory=lambda: ROOT / "data" / "raw" / "clean_tagged_persona.txt"
+    )
+    persona_checkpoint_dir: Path = field(
+        default_factory=lambda: ROOT / "checkpoints" / "sft_persona"
+    )
+    persona_log_name: str = "sft_persona_loss_log.csv"
+    persona_max_lr: float = 1e-5
+    persona_min_lr: float = 1e-6
+    persona_max_steps: int = 500
+
+
+@dataclass
 class GenerationConfig:
     temperature: float = 0.8
     top_k: int = 40

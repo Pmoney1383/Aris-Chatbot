@@ -127,6 +127,66 @@ class ShardedDataset(Dataset):
         return state
 
 
+def list_sft_shards(shard_dir: Path) -> list[Path]:
+    """Token shards written by scripts/prepare_sft_data.py (mask files excluded)."""
+    return sorted(
+        p for p in Path(shard_dir).glob("shard_sft_*.bin") if "_mask_" not in p.name
+    )
+
+
+def sft_mask_path(token_path: Path) -> Path:
+    """shard_sft_0003.bin -> shard_sft_mask_0003.bin"""
+    return token_path.with_name(token_path.name.replace("shard_sft_", "shard_sft_mask_"))
+
+
+class SFTShardedDataset(ShardedDataset):
+    """ShardedDataset plus a parallel uint8 loss-mask shard per token shard.
+
+    Yields (input, target, mask) where mask is aligned with target: mask[t]=1
+    means target[t] is an assistant token and contributes to the loss.
+    """
+
+    def __init__(self, shard_paths: list[Path], seq_len: int, stride: int | None = None):
+        super().__init__(shard_paths, seq_len, stride)
+        self.mask_paths = [sft_mask_path(p) for p in self.shard_paths]
+        for tok, msk, n_tokens in zip(self.shard_paths, self.mask_paths, self._sizes):
+            if not msk.exists():
+                raise FileNotFoundError(f"Missing mask shard {msk} for {tok}")
+            if msk.stat().st_size != n_tokens:
+                raise ValueError(
+                    f"Mask shard {msk.name} has {msk.stat().st_size} entries "
+                    f"but token shard has {n_tokens}"
+                )
+        self._mask_mmaps = [None] * len(self.shard_paths)
+
+    def _get_mask_mmap(self, shard_idx):
+        if self._mask_mmaps[shard_idx] is None:
+            self._mask_mmaps[shard_idx] = np.memmap(
+                self.mask_paths[shard_idx], dtype=np.uint8, mode="r"
+            )
+        return self._mask_mmaps[shard_idx]
+
+    def __getitem__(self, idx):
+        shard_idx = int(np.searchsorted(self._cum_windows, idx, side="right") - 1)
+        local_idx = idx - self._cum_windows[shard_idx]
+        start = int(local_idx) * self.stride
+
+        window = self._get_mmap(shard_idx)[start : start + self.seq_len + 1]
+        mask_window = self._get_mask_mmap(shard_idx)[start : start + self.seq_len + 1]
+
+        window = window.astype(np.int64)
+        x = torch.from_numpy(window[:-1])
+        y = torch.from_numpy(window[1:].copy())
+        # mask aligned with targets: position t masks the prediction of y[t]
+        m = torch.from_numpy(mask_window[1:].astype(np.float32))
+        return x, y, m
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_mask_mmaps"] = [None] * len(self.shard_paths)
+        return state
+
+
 def make_weighted_sampler(
     ds: ShardedDataset, source_weights: dict[str, float]
 ) -> WeightedRandomSampler:
