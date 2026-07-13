@@ -17,7 +17,13 @@ import torch
 import torch.nn.functional as F
 from rich.console import Console
 
-from src.chat_format import EOT_IDS, NEWLINE_IDS, encode_chat_prompt, get_encoding
+from src.chat_format import (
+    EOT_IDS,
+    NEWLINE_IDS,
+    encode_chat_prompt,
+    encode_conversation,
+    get_encoding,
+)
 from src.config import GenerationConfig, ModelConfig, SFTConfig
 from src.model import DecoderOnlyTransformer
 
@@ -25,22 +31,36 @@ console = Console()
 
 HISTORY_LIMIT = 1024  # trim conversation history beyond this many tokens
 
+# Invisible priming injected into the token history at the start of every
+# session (and after `clear`) — never printed to the user.
+PRIMING_TURNS = [
+    ("user",
+     'System: You are Aris, a casual and friendly AI assistant. You talk '
+     'like a young person — use casual language, slang like "bro", "gang", '
+     '"bet", "yurrr", "no cap". Keep responses short and punchy. Don\'t say '
+     '"As an AI language model". Be helpful but chill about it. Who are you '
+     'and how do you talk?'),
+    ("assistant",
+     "yooo i'm Aris, your AI homie 🔥 i keep it real and casual, no "
+     "corporate speak fr. what you need gang?"),
+    ("user", "okay bet, can you help me with something?"),
+    ("assistant", "yurrr for sure bro what you need? i got you 🙌"),
+]
+
+
+def priming_ids() -> list[int]:
+    ids, _ = encode_conversation(PRIMING_TURNS)
+    return ids
+
 
 def load_model(device):
     cfg = SFTConfig()
-    ckpts = sorted(cfg.checkpoint_dir.glob("ckpt_*.pt"))
-    if not ckpts:
-        ckpts = sorted(cfg.pretrain_checkpoint_dir.glob("ckpt_*.pt"))
-        if ckpts:
-            console.print("[yellow]No SFT checkpoint yet — using the base "
-                          "model from checkpoints/ (expect raw continuations, "
-                          "not chat).[/]")
-    if not ckpts:
-        console.print("[red]No checkpoints found. Run scripts/sft_train.py "
-                      "(or scripts/train.py) first.[/]")
+    ckpt_path = cfg.checkpoint_dir / "ckpt_003000.pt"
+    if not ckpt_path.exists():
+        console.print(f"[red]Checkpoint {ckpt_path} not found. Run "
+                      "scripts/sft_train.py first.[/]")
         sys.exit(1)
 
-    ckpt_path = ckpts[-1]
     console.print(f"Loading [bold]{ckpt_path}[/]...")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
@@ -115,7 +135,8 @@ def main():
     console.print("\nChat with Aris. Commands: [bold]clear[/] resets the "
                   "conversation, [bold]exit[/]/[bold]quit[/] leave.\n")
 
-    history: list[int] = []  # flat token ids of the whole conversation
+    # flat token ids of the whole conversation, seeded with the hidden priming
+    history: list[int] = priming_ids()
 
     while True:
         try:
@@ -125,7 +146,7 @@ def main():
         if user_text.lower() in ("exit", "quit"):
             break
         if user_text.lower() == "clear":
-            history = []
+            history = priming_ids()
             console.print("[dim]conversation cleared[/]\n")
             continue
         if not user_text:

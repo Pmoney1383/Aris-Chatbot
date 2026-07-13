@@ -19,7 +19,11 @@
       "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,StartTime,Path\")",
       "Bash(exit 0 *)",
       "Read(//c/Users/amirp/Documents/Git Projects/Aris-Chatbot/**)",
-      "Bash(powershell -Command \"\\(Get-Item 'C:\\\\Users\\\\amirp\\\\Documents\\\\Git Projects\\\\Aris-Chatbot\\\\logs\\\\loss_log.csv'\\).LastWriteTime\")"
+      "Bash(powershell -Command \"\\(Get-Item 'C:\\\\Users\\\\amirp\\\\Documents\\\\Git Projects\\\\Aris-Chatbot\\\\logs\\\\loss_log.csv'\\).LastWriteTime\")",
+      "PowerShell(\\(Get-ChildItem checkpoints\\\\sft\\).Count; Test-Path checkpoints\\\\sft\\\\ckpt_003000.pt; Get-ChildItem data -ErrorAction SilentlyContinue | Select-Object Name)",
+      "PowerShell(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'.'\\); from scripts.chat import priming_ids, PRIMING_TURNS; from src.chat_format import get_encoding; ids=priming_ids\\(\\); print\\('priming tokens:', len\\(ids\\)\\); print\\(repr\\(get_encoding\\(\\).decode\\(ids\\)\\)\\)\")",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'.'\\); from scripts.chat import priming_ids; from src.chat_format import get_encoding; ids=priming_ids\\(\\); txt=get_encoding\\(\\).decode\\(ids\\); print\\(len\\(ids\\), 'tokens'\\); print\\(txt\\)\")",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; \"hello`nwhat is quantum entanglement`ndo you know how to code`nexit\" | .venv/Scripts/python.exe scripts/chat.py)"
     ]
   }
 }
