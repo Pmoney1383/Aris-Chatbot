@@ -1,13 +1,19 @@
 """Conversation REPL for the SFT'd Aris chatbot.
 
-Loads the newest checkpoint from checkpoints/sft/ (falls back to checkpoints/
-if SFT hasn't run yet). Keeps the running conversation as a flat token id
-list, formats each user message with the chat template from src/chat_format.py,
-and stops generation at the <|eot|> delimiter.
+Loads the newest checkpoint from checkpoints/sft_persona_v2/ if present,
+otherwise checkpoints/sft/ckpt_003000.pt. Keeps the running conversation as a
+flat token id list, formats each user message with the chat template from
+src/chat_format.py, and stops generation at the <|eot|> delimiter.
 
-Commands: `clear` resets the conversation, `exit` / `quit` leave.
+Commands:
+    clear            reset the conversation
+    good             save the last exchange to data/raw/persona_curated.jsonl
+    fix <text>       save the last user message with <text> as the corrected
+                     assistant reply to persona_curated.jsonl
+    exit / quit      leave
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -24,7 +30,7 @@ from src.chat_format import (
     encode_conversation,
     get_encoding,
 )
-from src.config import GenerationConfig, ModelConfig, SFTConfig
+from src.config import GenerationConfig, ModelConfig, PersonaV2Config, SFTConfig
 from src.model import DecoderOnlyTransformer
 
 console = Console()
@@ -54,14 +60,19 @@ def priming_ids() -> list[int]:
 
 
 def load_model(device):
-    cfg = SFTConfig()
-    ckpt_path = cfg.checkpoint_dir / "ckpt_003000.pt"
-    if not ckpt_path.exists():
-        console.print(f"[red]Checkpoint {ckpt_path} not found. Run "
-                      "scripts/sft_train.py first.[/]")
-        sys.exit(1)
-
-    console.print(f"Loading [bold]{ckpt_path}[/]...")
+    persona_cfg = PersonaV2Config()
+    persona_ckpts = sorted(persona_cfg.checkpoint_dir.glob("ckpt_*.pt"))
+    if persona_ckpts:
+        ckpt_path = persona_ckpts[-1]
+        console.print(f"[bold green]Loading persona v2 checkpoint: {ckpt_path}[/]")
+    else:
+        ckpt_path = SFTConfig().checkpoint_dir / "ckpt_003000.pt"
+        if not ckpt_path.exists():
+            console.print(f"[red]No persona v2 checkpoint and {ckpt_path} not "
+                          "found. Run scripts/sft_train.py first.[/]")
+            sys.exit(1)
+        console.print(f"[bold]Loading chat-SFT checkpoint: {ckpt_path}[/] "
+                      "(no persona v2 checkpoint yet)")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     model_cfg = ModelConfig(**ckpt["model_config"])
@@ -124,6 +135,16 @@ def generate(model, context_ids, device, gen_cfg: GenerationConfig):
     return generated
 
 
+def save_curated_pair(user_text: str, assistant_text: str) -> Path:
+    """Append one {"user", "assistant"} pair to data/raw/persona_curated.jsonl."""
+    path = PersonaV2Config().curated_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"user": user_text, "assistant": assistant_text},
+                           ensure_ascii=False) + "\n")
+    return path
+
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     console.print(f"Device: {device}")
@@ -133,10 +154,14 @@ def main():
     gen_cfg = GenerationConfig()
 
     console.print("\nChat with Aris. Commands: [bold]clear[/] resets the "
-                  "conversation, [bold]exit[/]/[bold]quit[/] leave.\n")
+                  "conversation, [bold]good[/] saves the last exchange, "
+                  "[bold]fix <text>[/] saves it with a corrected reply, "
+                  "[bold]exit[/]/[bold]quit[/] leave.\n")
 
     # flat token ids of the whole conversation, seeded with the hidden priming
     history: list[int] = priming_ids()
+    last_user: str | None = None
+    last_reply: str | None = None
 
     while True:
         try:
@@ -147,7 +172,25 @@ def main():
             break
         if user_text.lower() == "clear":
             history = priming_ids()
+            last_user = last_reply = None
             console.print("[dim]conversation cleared[/]\n")
+            continue
+        if user_text.lower() == "good":
+            if last_user is None or last_reply is None:
+                console.print("[yellow]nothing to save yet[/]\n")
+            else:
+                path = save_curated_pair(last_user, last_reply)
+                console.print(f"[green]saved exchange to {path.name}[/]\n")
+            continue
+        if user_text.lower().startswith("fix ") or user_text.lower() == "fix":
+            corrected = user_text[3:].strip()
+            if last_user is None:
+                console.print("[yellow]nothing to fix yet[/]\n")
+            elif not corrected:
+                console.print("[yellow]usage: fix <corrected assistant reply>[/]\n")
+            else:
+                path = save_curated_pair(last_user, corrected)
+                console.print(f"[green]saved corrected exchange to {path.name}[/]\n")
             continue
         if not user_text:
             continue
@@ -157,6 +200,7 @@ def main():
 
         reply_ids = generate(model, history, device, gen_cfg)
         reply = enc.decode(reply_ids).strip()
+        last_user, last_reply = user_text, reply
 
         # record the full assistant turn (with eot) so the template stays intact
         history.extend(reply_ids + EOT_IDS + NEWLINE_IDS)

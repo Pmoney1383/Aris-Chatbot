@@ -133,6 +133,52 @@ class SFTConfig:
 
 
 @dataclass
+class PersonaV2Config:
+    """Persona SFT v2: fine-tune the chat-SFT model on synthetic Aris-persona
+    conversations (scripts/generate_persona_data.py) plus manual curations."""
+
+    # Paths
+    synthetic_file: Path = field(
+        default_factory=lambda: ROOT / "data" / "raw" / "persona_synthetic.jsonl"
+    )
+    curated_file: Path = field(
+        default_factory=lambda: ROOT / "data" / "raw" / "persona_curated.jsonl"
+    )
+    init_checkpoint: Path = field(
+        default_factory=lambda: ROOT / "checkpoints" / "sft" / "ckpt_003000.pt"
+    )
+    checkpoint_dir: Path = field(
+        default_factory=lambda: ROOT / "checkpoints" / "sft_persona_v2"
+    )
+    log_dir: Path = field(default_factory=lambda: ROOT / "logs")
+    log_name: str = "sft_persona_v2_loss_log.csv"
+
+    # Data
+    val_fraction: float = 0.10               # 90/10 train/val split by pair
+    seed: int = 1337                         # pair shuffle before the split
+
+    # Training
+    batch_size: int = 4
+    grad_accum_steps: int = 16
+    max_lr: float = 1e-5
+    min_lr: float = 1e-6
+    warmup_steps: int = 20
+    max_steps: int = 300
+    weight_decay: float = 0.1
+    grad_clip: float = 1.0
+    amp_dtype: str = "bfloat16"
+
+    # Checkpointing / eval
+    save_every: int = 50
+    eval_every: int = 15
+    val_batches: int = 20
+    early_stop_evals: int = 3                # stop after N consecutive val rises
+
+    # DataLoader
+    num_workers: int = 2
+
+
+@dataclass
 class GenerationConfig:
     temperature: float = 0.8
     top_k: int = 40
