@@ -163,7 +163,7 @@ class PersonaV2Config:
     max_lr: float = 5e-6
     min_lr: float = 1e-6
     warmup_steps: int = 20
-    max_steps: int = 80
+    max_steps: int = 200
     weight_decay: float = 0.1
     grad_clip: float = 1.0
     amp_dtype: str = "bfloat16"
