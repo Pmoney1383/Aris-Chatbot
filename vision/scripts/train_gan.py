@@ -173,6 +173,16 @@ def main() -> None:
                 g_loss.backward()
                 opt_g.step()
 
+                # ---- G step 2: train G twice per D step so it can catch up ----
+                opt_g.zero_grad(set_to_none=True)
+                with torch.autocast(device, dtype=torch.bfloat16, enabled=use_amp):
+                    z = torch.randn(b, config.z_dim, device=device)
+                    fake = G(z)
+                    g_logits = D(fake)
+                    g_loss = criterion(g_logits, torch.ones(b, device=device))
+                g_loss.backward()
+                opt_g.step()
+
                 step += 1
                 d_loss_v, g_loss_v = d_loss.item(), g_loss.item()
                 with torch.no_grad():
