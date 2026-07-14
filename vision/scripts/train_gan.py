@@ -64,14 +64,18 @@ def save_checkpoint(config, G, D, opt_g, opt_d, step: int) -> None:
     console.print(f"[green]Saved checkpoint {path.name}[/green]")
 
 
-def make_table(step, max_steps, d_loss, g_loss, d_real, d_fake, sps, eta_s) -> Table:
+def make_table(step, max_steps, d_loss, g_loss, d_real, d_fake,
+               d_acc_real, d_acc_fake, d_acc_overall, sps, eta_s) -> Table:
     table = Table(title="DCGAN training")
-    for col in ("step", "D_loss", "G_loss", "D(real)", "D(fake)", "steps/s", "ETA"):
+    for col in ("step", "D_loss", "G_loss", "D(real)", "D(fake)",
+                "D_acc_real", "D_acc_fake", "D_acc", "steps/s", "ETA"):
         table.add_column(col, justify="right")
     eta = time.strftime("%H:%M:%S", time.gmtime(eta_s)) if sps > 0 else "--"
     table.add_row(
         f"{step}/{max_steps}", f"{d_loss:.4f}", f"{g_loss:.4f}",
-        f"{d_real:.3f}", f"{d_fake:.3f}", f"{sps:.2f}", eta,
+        f"{d_real:.3f}", f"{d_fake:.3f}",
+        f"{d_acc_real:.1%}", f"{d_acc_fake:.1%}", f"{d_acc_overall:.1%}",
+        f"{sps:.2f}", eta,
     )
     return table
 
@@ -111,7 +115,14 @@ def main() -> None:
     log_file = open(log_path, "a", newline="")
     log_writer = csv.writer(log_file)
     if log_path.stat().st_size == 0:
-        log_writer.writerow(["step", "d_loss", "g_loss", "d_real", "d_fake"])
+        log_writer.writerow(["step", "d_loss", "g_loss", "d_real", "d_fake",
+                              "d_acc_real", "d_acc_fake", "d_acc_overall"])
+
+    console.print(
+        "[dim]D accuracy note: healthy training oscillates around 50-80%. "
+        "Pinned at 100% means D is overpowering G; collapsed to ~50% means "
+        "G has fully fooled D (can also indicate mode collapse).[/dim]"
+    )
 
     def save_samples(at_step: int) -> None:
         G.eval()
@@ -122,6 +133,7 @@ def main() -> None:
                    nrow=8, normalize=True, value_range=(-1, 1))
 
     d_loss_v = g_loss_v = d_real_v = d_fake_v = 0.0
+    d_acc_real_v = d_acc_fake_v = d_acc_overall_v = 0.0
     t0 = time.time()
     step0 = step
     data_iter = iter(loader)
@@ -164,16 +176,24 @@ def main() -> None:
                 step += 1
                 d_loss_v, g_loss_v = d_loss.item(), g_loss.item()
                 with torch.no_grad():
-                    d_real_v = torch.sigmoid(real_logits).float().mean().item()
-                    d_fake_v = torch.sigmoid(fake_logits).float().mean().item()
+                    real_probs = torch.sigmoid(real_logits).float()
+                    fake_probs = torch.sigmoid(fake_logits).float()
+                    d_real_v = real_probs.mean().item()
+                    d_fake_v = fake_probs.mean().item()
+                    d_acc_real_v = (real_probs > 0.5).float().mean().item()
+                    d_acc_fake_v = (fake_probs < 0.5).float().mean().item()
+                    d_acc_overall_v = (d_acc_real_v + d_acc_fake_v) / 2
 
                 log_writer.writerow([step, f"{d_loss_v:.4f}", f"{g_loss_v:.4f}",
-                                     f"{d_real_v:.4f}", f"{d_fake_v:.4f}"])
+                                     f"{d_real_v:.4f}", f"{d_fake_v:.4f}",
+                                     f"{d_acc_real_v:.4f}", f"{d_acc_fake_v:.4f}",
+                                     f"{d_acc_overall_v:.4f}"])
 
                 sps = (step - step0) / max(time.time() - t0, 1e-9)
                 eta_s = (config.max_steps - step) / max(sps, 1e-9)
                 live.update(make_table(step, config.max_steps, d_loss_v, g_loss_v,
-                                       d_real_v, d_fake_v, sps, eta_s))
+                                       d_real_v, d_fake_v, d_acc_real_v, d_acc_fake_v,
+                                       d_acc_overall_v, sps, eta_s))
 
                 if step % config.sample_every == 0:
                     save_samples(step)
