@@ -13,6 +13,7 @@ data/
 *.pth
 checkpoints/
 logs/
+vision/samples/
 runs/
 .ipynb_checkpoints/
 .vscode/
