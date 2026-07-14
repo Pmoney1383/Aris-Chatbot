@@ -22,7 +22,7 @@ class GANConfig:
     d_features: int = 64      # discriminator base feature maps
 
     # training
-    batch_size: int = 128
+    batch_size: int = 512
     lr_g: float = 2e-4
     lr_d: float = 5e-5
     betas: tuple = (0.5, 0.999)
