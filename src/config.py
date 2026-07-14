@@ -158,19 +158,19 @@ class PersonaV2Config:
     seed: int = 1337                         # pair shuffle before the split
 
     # Training
-    batch_size: int = 4
+    batch_size: int = 12
     grad_accum_steps: int = 16
-    max_lr: float = 1e-5
+    max_lr: float = 5e-6
     min_lr: float = 1e-6
     warmup_steps: int = 20
-    max_steps: int = 300
+    max_steps: int = 80
     weight_decay: float = 0.1
     grad_clip: float = 1.0
     amp_dtype: str = "bfloat16"
 
     # Checkpointing / eval
-    save_every: int = 50
-    eval_every: int = 15
+    save_every: int = 10
+    eval_every: int = 10
     val_batches: int = 20
     early_stop_evals: int = 3                # stop after N consecutive val rises
 
