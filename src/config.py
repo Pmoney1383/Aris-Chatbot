@@ -158,7 +158,7 @@ class PersonaV2Config:
     seed: int = 1337                         # pair shuffle before the split
 
     # Training
-    batch_size: int = 8
+    batch_size: int = 6
     grad_accum_steps: int = 16
     max_lr: float = 5e-6
     min_lr: float = 1e-6
