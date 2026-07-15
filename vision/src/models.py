@@ -7,6 +7,9 @@ Discriminator: 64x64x3 -> four strided Conv2d blocks (3 -> 64 -> 128 -> 256 -> 5
                LeakyReLU(0.2), spectral norm on every conv (no BatchNorm — spectral
                norm is D's stabilizer), final Conv to a single logit
                (no sigmoid — use BCEWithLogitsLoss).
+
+Both nets carry a SAGAN-style SelfAttention2d at their 32x32 stage (gamma=0 at
+init, so it's a no-op until training learns to use it).
 """
 
 import sys
@@ -35,6 +38,36 @@ def init_weights(module: nn.Module) -> None:
         nn.init.zeros_(module.bias)
 
 
+class SelfAttention2d(nn.Module):
+    """SAGAN-style self-attention over a 2D feature map.
+
+    gamma starts at 0 so the layer is an exact no-op at initialization
+    (output = input); the network learns to blend attention in gradually,
+    which keeps early training stable.
+    """
+
+    def __init__(self, in_channels: int, use_spectral_norm: bool = False):
+        super().__init__()
+        query = nn.Conv2d(in_channels, in_channels // 8, 1)
+        key = nn.Conv2d(in_channels, in_channels // 8, 1)
+        value = nn.Conv2d(in_channels, in_channels, 1)
+        for conv in (query, key, value):
+            init_weights(conv)
+        if use_spectral_norm:
+            query, key, value = (spectral_norm(c) for c in (query, key, value))
+        self.query, self.key, self.value = query, key, value
+        self.gamma = nn.Parameter(torch.zeros(1))  # learned, starts at 0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        q = self.query(x).view(B, -1, H * W).permute(0, 2, 1)   # B, HW, C//8
+        k = self.key(x).view(B, -1, H * W)                      # B, C//8, HW
+        attn = torch.softmax(torch.bmm(q, k), dim=-1)           # B, HW, HW
+        v = self.value(x).view(B, -1, H * W)                    # B, C, HW
+        out = torch.bmm(v, attn.permute(0, 2, 1)).view(B, C, H, W)
+        return x + self.gamma * out
+
+
 class Generator(nn.Module):
     def __init__(self, config: GANConfig):
         super().__init__()
@@ -43,6 +76,9 @@ class Generator(nn.Module):
 
         # z -> 4x4 feature map
         self.project = nn.Linear(config.z_dim, f * 4 * 4)
+
+        # named attribute so training code can inspect e.g. G.attn.gamma
+        self.attn = SelfAttention2d(f // 8)  # at the 32x32 stage (64 channels)
 
         self.blocks = nn.Sequential(
             # 4x4x512 -> 8x8x256
@@ -57,6 +93,8 @@ class Generator(nn.Module):
             nn.BatchNorm2d(f // 4),
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(f // 4, f // 8, kernel_size=4, stride=2, padding=1, bias=False),
+            # self-attention at 32x32x64 for global structural coherence
+            self.attn,
             # 32x32x64 -> 64x64x3
             nn.BatchNorm2d(f // 8),
             nn.ReLU(inplace=True),
@@ -86,12 +124,19 @@ class Discriminator(nn.Module):
         super().__init__()
         f = config.d_features  # 64
 
+        # named attribute so training code can inspect e.g. D.attn.gamma
+        # NOTE: the 32x32 stage in this D has 64 channels (the first conv is
+        # what downsamples to 32x32); 128 channels only appear at 16x16.
+        self.attn = SelfAttention2d(f, use_spectral_norm=True)
+
         # Spectral norm on every conv; no BatchNorm (the two aren't combined —
         # spectral norm takes over as D's stabilizer).
         self.blocks = nn.Sequential(
             # 64x64x3 -> 32x32x64
             _sn_conv(config.channels, f, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
+            # self-attention at 32x32x64, mirroring the generator's placement
+            self.attn,
             # 32x32x64 -> 16x16x128
             _sn_conv(f, f * 2, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
