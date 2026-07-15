@@ -110,6 +110,19 @@ class Generator(nn.Module):
         return self.blocks(x)
 
 
+class MinibatchStdDev(nn.Module):
+    """Appends the mean batch-wise std as an extra channel, so D can directly
+    see intra-batch similarity — a batch of near-identical fakes has an obvious
+    statistical signature (std ~ 0) that D can penalize, countering mode
+    collapse."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        std = x.std(dim=0, unbiased=False)            # C, H, W - std across the batch
+        mean_std = std.mean().expand(B, 1, H, W)      # scalar broadcast to B,1,H,W
+        return torch.cat([x, mean_std], dim=1)        # concat as extra channel
+
+
 def _sn_conv(*args, **kwargs) -> nn.Module:
     """Conv2d with DCGAN init applied BEFORE the spectral_norm wrap — the
     parametrized .weight is a computed property and can't be initialized
@@ -146,8 +159,10 @@ class Discriminator(nn.Module):
             # 8x8x256 -> 4x4x512
             _sn_conv(f * 4, f * 8, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
-            # 4x4x512 -> 1x1x1 logit
-            _sn_conv(f * 8, 1, kernel_size=4, stride=1, padding=0),
+            # minibatch stddev adds one channel before the classification head
+            MinibatchStdDev(),
+            # 4x4x(512+1) -> 1x1x1 logit
+            _sn_conv(f * 8 + 1, 1, kernel_size=4, stride=1, padding=0),
         )
         # NOTE: no self.apply(init_weights) here — each conv is initialized
         # inside _sn_conv before wrapping.
