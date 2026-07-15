@@ -23,7 +23,7 @@ class GANConfig:
 
     # training
     batch_size: int = 512
-    lr_g: float = 2e-4
+    lr_g: float = 7e-4
     lr_d: float = 5e-5
     betas: tuple = (0.5, 0.999)
     label_smooth: float = 0.9   # real labels = 0.9 not 1.0
