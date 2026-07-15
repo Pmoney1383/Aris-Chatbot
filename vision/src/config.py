@@ -22,11 +22,12 @@ class GANConfig:
     d_features: int = 64      # discriminator base feature maps
 
     # training
-    batch_size: int = 512
-    lr_g: float = 4e-4
+    batch_size: int = 128
+    lr_g: float = 2e-4
     lr_d: float = 2e-4
     betas: tuple = (0.5, 0.999)
     label_smooth: float = 0.9   # real labels = 0.9 not 1.0
+    r1_gamma: float = 10.0     # R1 gradient penalty weight on D's real-image loss
     max_steps: int = 100_000
     sample_every: int = 500     # save sample grid every N steps
     ckpt_every: int = 2000

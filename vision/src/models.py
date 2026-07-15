@@ -4,8 +4,9 @@ Generator:     z (z_dim) -> Linear -> 4x4x512 -> four ConvTranspose2d blocks
                (512 -> 256 -> 128 -> 64 -> 3), BatchNorm + ReLU between,
                Tanh output in [-1, 1].
 Discriminator: 64x64x3 -> four strided Conv2d blocks (3 -> 64 -> 128 -> 256 -> 512),
-               LeakyReLU(0.2), BatchNorm on all but the first block,
-               final Conv to a single logit (no sigmoid — use BCEWithLogitsLoss).
+               LeakyReLU(0.2), spectral norm on every conv (no BatchNorm — spectral
+               norm is D's stabilizer), final Conv to a single logit
+               (no sigmoid — use BCEWithLogitsLoss).
 """
 
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 import torch.nn as nn
+from torch.nn.utils.parametrizations import spectral_norm
 
 from src.config import GANConfig
 
@@ -70,32 +72,40 @@ class Generator(nn.Module):
         return self.blocks(x)
 
 
+def _sn_conv(*args, **kwargs) -> nn.Module:
+    """Conv2d with DCGAN init applied BEFORE the spectral_norm wrap — the
+    parametrized .weight is a computed property and can't be initialized
+    in-place afterwards."""
+    conv = nn.Conv2d(*args, **kwargs)
+    init_weights(conv)
+    return spectral_norm(conv)
+
+
 class Discriminator(nn.Module):
     def __init__(self, config: GANConfig):
         super().__init__()
         f = config.d_features  # 64
 
+        # Spectral norm on every conv; no BatchNorm (the two aren't combined —
+        # spectral norm takes over as D's stabilizer).
         self.blocks = nn.Sequential(
-            # 64x64x3 -> 32x32x64 (no BatchNorm on the first block)
-            nn.Conv2d(config.channels, f, kernel_size=4, stride=2, padding=1),
+            # 64x64x3 -> 32x32x64
+            _sn_conv(config.channels, f, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             # 32x32x64 -> 16x16x128
-            nn.Conv2d(f, f * 2, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(f * 2),
+            _sn_conv(f, f * 2, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             # 16x16x128 -> 8x8x256
-            nn.Conv2d(f * 2, f * 4, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(f * 4),
+            _sn_conv(f * 2, f * 4, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             # 8x8x256 -> 4x4x512
-            nn.Conv2d(f * 4, f * 8, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(f * 8),
+            _sn_conv(f * 4, f * 8, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             # 4x4x512 -> 1x1x1 logit
-            nn.Conv2d(f * 8, 1, kernel_size=4, stride=1, padding=0),
+            _sn_conv(f * 8, 1, kernel_size=4, stride=1, padding=0),
         )
-
-        self.apply(init_weights)
+        # NOTE: no self.apply(init_weights) here — each conv is initialized
+        # inside _sn_conv before wrapping.
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.blocks(x).view(-1)  # (B,) raw logits

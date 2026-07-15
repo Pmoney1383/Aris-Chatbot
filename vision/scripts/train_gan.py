@@ -1,6 +1,7 @@
 """DCGAN training loop for 64x64 cat images.
 
 - BCEWithLogits with one-sided label smoothing on real labels
+- R1 gradient penalty on D's real-image loss (config.r1_gamma)
 - bf16 autocast on CUDA for G and D forward passes
 - fixed noise grid saved every sample_every steps for visual progress
 - checkpoint save/auto-resume, CSV loss logging, rich live display
@@ -152,14 +153,20 @@ def main() -> None:
                 real_labels = torch.full((b,), config.label_smooth, device=device)
                 fake_labels = torch.zeros(b, device=device)
 
-                # ---- D step: real (smoothed labels) + fake (detached) ----
+                # ---- D step: real (smoothed labels + R1 penalty) + fake (detached) ----
                 opt_d.zero_grad(set_to_none=True)
+                real.requires_grad_(True)  # needed for the R1 grad w.r.t. inputs
                 with torch.autocast(device, dtype=torch.bfloat16, enabled=use_amp):
                     z = torch.randn(b, config.z_dim, device=device)
                     fake = G(z)
                     real_logits = D(real)
                     fake_logits = D(fake.detach())
                     d_loss = criterion(real_logits, real_labels) + criterion(fake_logits, fake_labels)
+                # R1: gamma * mean(||grad_x D(x)||^2) on real images only.
+                # create_graph so the penalty itself is differentiated in d_loss.backward().
+                (r1_grad,) = torch.autograd.grad(real_logits.sum(), real, create_graph=True)
+                r1_penalty = r1_grad.float().pow(2).flatten(1).sum(dim=1).mean()
+                d_loss = d_loss + config.r1_gamma * r1_penalty
                 d_loss.backward()
                 opt_d.step()
 
