@@ -12,3 +12,22 @@ rich>=13.0
 matplotlib>=3.8
 numpy>=1.26
 bitsandbytes>=0.45   # not used until Stage B+ (8-bit Adam); safe to skip if install fails
+
+# --- Real-ESRGAN upscaling (vision/scripts/upscale.py) ---
+# The PyPI sdists of basicsr 1.4.2 and realesrgan 0.3.0 DO NOT BUILD on
+# Python 3.13+: their setup.py get_version() relies on exec() mutating
+# function locals(), which PEP 667 removed -> KeyError '__version__'.
+# Install from patched local clones instead (patch get_version to exec into
+# an explicit dict), with --no-build-isolation so the build sees torch:
+#
+#   git clone --depth 1 https://github.com/XPixelGroup/BasicSR.git
+#   git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git
+#   <patch get_version() in both setup.py files>
+#   pip install --no-build-isolation ./BasicSR
+#   pip install --no-build-isolation --no-deps ./Real-ESRGAN   # --no-deps skips gfpgan/facexlib (face enhance, unused)
+#
+# BasicSR git master also already fixes the torchvision>=0.17 import break
+# (degradations.py now imports rgb_to_grayscale from
+# torchvision.transforms.functional, not the removed functional_tensor).
+basicsr>=1.4.2       # see install note above -- pip sdist is broken on py3.13+
+realesrgan>=0.3.0    # see install note above
