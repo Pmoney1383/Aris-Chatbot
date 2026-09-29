@@ -1,0 +1,507 @@
+"""
+Regenerates image-generator-v2/dataset/image_scraping_catalogue.csv from the
+category/subcategory/angle definitions below.
+
+Run:
+    python image-generator-v2/scripts/build_catalogue.py
+
+This is the single source of truth for the catalogue's *taxonomy*. To grow the
+catalogue further, add entries to SUBCATS / ANGLES and re-run -- do not hand-edit
+the generated CSV.
+"""
+
+import csv
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT_CSV = ROOT / "dataset" / "image_scraping_catalogue.csv"
+
+GENERAL_NOTE = (
+    "Normal collection rules: reject watermarks, duplicates, corrupt files, "
+    "and anything failing local safety/provenance checks."
+)
+ADULT_NOTE = (
+    "18+ only; use verified-adult/provenance-controlled sources. Reject any "
+    "age ambiguity locally and never upload suspicious material to cloud APIs. "
+    "GATED: the data-gathering script refuses to run this category until a "
+    "named, licensed, age-verified source connector is configured -- generic "
+    "web/image-search scraping is never used for this category."
+)
+
+# top_category -> (subcategories[], angles[], source_tier)
+CATALOGUE: dict[str, tuple[list[str], list[str], str]] = {
+    "Animals & Wildlife": (
+        ["lion", "tiger", "leopard", "cheetah", "elephant", "giraffe", "zebra",
+         "rhinoceros", "hippopotamus", "wolf", "fox", "bear",
+         "gorilla", "chimpanzee", "kangaroo", "koala", "panda", "bison",
+         "moose", "wild boar", "hyena", "meerkat"],
+        ["in natural habitat", "close-up portrait", "full-body action",
+         "group or social behavior", "resting or sleeping", "hunting or foraging",
+         "mother with young", "camera-trap style candid"],
+        "general_or_curated_web",
+    ),
+    "Pets & Domestic Animals": (
+        ["domestic cat", "golden retriever", "german shepherd", "poodle",
+         "rabbit", "hamster", "guinea pig", "pet parrot", "horse", "goat", "sheep", "cow",
+         "kitten", "puppy", "beagle", "tabby cat", "ferret", "pony", "chicken",
+         "pig", "goldfish", "budgerigar"],
+        ["indoor lifestyle photo", "outdoor natural photo", "close-up portrait",
+         "playing or interacting", "sleeping or resting", "with owner",
+         "at the vet", "grooming session"],
+        "general_or_curated_web",
+    ),
+    "Birds": (
+        ["eagle", "owl", "falcon", "parrot", "peacock", "flamingo", "penguin",
+         "swan", "hummingbird", "woodpecker", "duck", "seagull",
+         "robin", "sparrow", "toucan", "crane bird", "vulture", "kingfisher",
+         "heron", "cardinal bird", "ostrich", "pigeon"],
+        ["perched portrait", "in flight", "natural habitat",
+         "close-up feather detail", "nesting", "feeding", "at a bird feeder",
+         "silhouette against sky"],
+        "general_or_curated_web",
+    ),
+    "Marine Life": (
+        ["great white shark", "dolphin", "blue whale", "orca", "sea turtle",
+         "octopus", "jellyfish", "seahorse", "stingray", "coral reef fish", "seal", "crab",
+         "clownfish", "manta ray", "starfish", "lobster", "sea otter", "hammerhead shark",
+         "eel", "anemone", "walrus", "sea lion"],
+        ["underwater wide shot", "close-up underwater", "swimming action",
+         "natural marine habitat", "school or group formation", "on coral reef",
+         "surface breach", "night dive shot"],
+        "general_or_curated_web",
+    ),
+    "People & Portraits": (
+        ["adult man portrait", "adult woman portrait", "elderly adult portrait",
+         "young adult portrait", "adult couple portrait", "adult family group",
+         "adult friends group", "business professional", "artist portrait",
+         "musician portrait", "athlete portrait", "chef portrait",
+         "adult teacher portrait", "adult doctor portrait", "adult scientist portrait",
+         "adult farmer portrait", "adult firefighter portrait", "adult police officer portrait",
+         "adult chef in kitchen portrait", "adult construction worker portrait",
+         "adult grandparent portrait", "adult twins portrait"],
+        ["studio portrait", "candid outdoor portrait", "environmental portrait",
+         "full-body portrait", "black and white portrait", "smiling headshot",
+         "profile side portrait", "group laughing candid"],
+        "general_or_curated_web",
+    ),
+    "Human Activities": (
+        ["cooking", "reading", "writing", "painting", "gardening", "shopping",
+         "cleaning", "working from home", "photography", "playing guitar",
+         "walking a dog", "camping",
+         "playing chess", "knitting", "baking bread", "fishing", "woodworking",
+         "meditating", "dancing at home", "playing board games", "washing a car",
+         "assembling furniture"],
+        ["person doing activity close-up", "wide environmental scene",
+         "candid lifestyle photo", "detail of hands and tools",
+         "morning routine moment", "evening routine moment",
+         "outdoors in nature", "indoors at home"],
+        "general_or_curated_web",
+    ),
+    "Sports & Fitness": (
+        ["soccer", "basketball", "tennis", "volleyball", "baseball", "ice hockey",
+         "boxing", "running", "cycling", "swimming", "weightlifting", "yoga",
+         "rock climbing", "surfing", "skateboarding", "golf", "martial arts",
+         "gymnastics", "rowing", "American football", "rugby", "skiing"],
+        ["competitive action", "training session", "athlete close-up",
+         "wide venue scene", "team huddle", "victory celebration",
+         "warm-up stretching", "equipment close-up"],
+        "general_or_curated_web",
+    ),
+    "Nature & Landscapes": (
+        ["mountain range", "forest", "desert", "waterfall", "lake", "river",
+         "ocean coast", "canyon", "glacier", "volcano", "meadow", "tropical island",
+         "savanna", "cave", "fjord", "wetland", "valley", "cliff coastline",
+         "sand dunes", "alpine lake", "rainforest canopy", "salt flat"],
+        ["wide landscape", "sunrise", "sunset", "dramatic weather",
+         "aerial drone view", "long exposure", "misty morning", "night sky over landscape"],
+        "general_or_curated_web",
+    ),
+    "Plants & Botany": (
+        ["rose", "sunflower", "tulip", "orchid", "cactus", "fern", "pine tree",
+         "maple tree", "palm tree", "moss", "wildflowers", "bamboo",
+         "lavender field", "bonsai tree", "succulent", "lily flower", "ivy vine",
+         "mushroom fungi", "seed pod", "autumn leaves", "cherry blossom", "vegetable garden"],
+        ["macro detail", "whole plant", "natural environment",
+         "botanical studio image", "in a garden bed", "backlit by sunlight",
+         "covered in dew or rain", "seasonal change close-up"],
+        "general_or_curated_web",
+    ),
+    "Weather & Sky": (
+        ["thunderstorm", "lightning", "rain", "snowfall", "fog", "rainbow",
+         "cloudscape", "starry night", "milky way", "aurora", "sunrise sky", "sunset sky",
+         "hail storm", "tornado", "hurricane clouds", "hazy sky", "double rainbow",
+         "cirrus clouds", "golden hour sky", "blizzard"],
+        ["wide sky scene", "over landscape", "over city",
+         "dramatic close atmospheric detail", "time-lapse style composition",
+         "reflected on water", "seen through window", "silhouetted foreground"],
+        "general_or_curated_web",
+    ),
+    "Architecture & Buildings": (
+        ["modern skyscraper", "glass office building", "apartment building",
+         "suburban house", "luxury villa", "historic castle", "cathedral",
+         "mosque", "temple", "industrial warehouse", "wood cabin", "futuristic building",
+         "bridge structure", "lighthouse", "stadium", "opera house", "government building",
+         "school building", "farmhouse", "skyscraper cluster skyline"],
+        ["exterior daytime", "exterior nighttime", "architectural detail",
+         "wide surrounding context", "drone aerial view", "reflection in glass or water",
+         "under construction", "silhouette at dusk"],
+        "general_or_curated_web",
+    ),
+    "Interiors & Rooms": (
+        ["modern living room", "minimalist bedroom", "luxury kitchen",
+         "home office", "bathroom", "restaurant interior", "coffee shop interior",
+         "hotel room", "hotel lobby", "classroom interior", "library interior", "gym interior",
+         "dining room", "nursery room", "walk-in closet", "attic space",
+         "basement lounge", "art studio interior", "conference room", "spa interior"],
+        ["wide interior", "detail shot", "natural daylight",
+         "ambient evening lighting", "empty and staged", "in candid use",
+         "top-down floor plan style view", "cozy warm-toned lighting"],
+        "general_or_curated_web",
+    ),
+    "Cities & Urban Life": (
+        ["downtown skyline", "busy city street", "suburban street",
+         "pedestrian plaza", "urban alley", "city park", "metro station",
+         "train station", "street market", "nightlife district",
+         "residential neighborhood", "urban rooftop",
+         "crosswalk intersection", "food truck row", "graffiti alley",
+         "waterfront promenade", "city bike lane", "public square"],
+        ["daytime", "nighttime", "rainy weather", "street-level candid scene",
+         "aerial city view", "crowded rush hour", "quiet early morning",
+         "neon-lit evening"],
+        "general_or_curated_web",
+    ),
+    "Transportation & Vehicles": (
+        ["sports car", "sedan", "SUV", "pickup truck", "motorcycle", "bicycle",
+         "city bus", "passenger train", "subway train", "commercial airplane",
+         "helicopter", "sailboat",
+         "electric car", "cargo ship", "fire truck", "tractor", "cargo van",
+         "hot air balloon", "tram", "scooter"],
+        ["studio or clean product view", "moving action shot",
+         "interior or cockpit", "real-world environment", "parked close-up",
+         "night driving scene", "aerial or drone shot", "maintenance or repair scene"],
+        "general_or_curated_web",
+    ),
+    "Technology & Electronics": (
+        ["smartphone", "laptop", "desktop computer", "gaming PC", "computer GPU",
+         "smartwatch", "headphones", "camera", "drone", "robot", "server rack", "VR headset",
+         "wireless earbuds", "3D printer device", "smart speaker", "router",
+         "solid state drive", "circuit board", "e-reader", "tablet computer"],
+        ["clean product photo", "in real-world use", "close-up component detail",
+         "desk or workspace scene", "unboxing scene", "exploded parts view",
+         "held in hand", "charging or connected setup"],
+        "general_or_curated_web",
+    ),
+    "Industrial & Engineering": (
+        ["factory production line", "CNC machine", "industrial robot arm",
+         "construction crane", "excavator", "wind turbine", "solar farm",
+         "oil refinery", "power station", "data center", "laboratory equipment", "mechanical gears",
+         "assembly line workers", "shipping container yard", "steel mill", "pipeline infrastructure",
+         "3D printing factory floor", "electrical substation"],
+        ["wide facility view", "machine close-up", "worker operating equipment",
+         "technical detail", "safety inspection scene", "blueprint or schematic overlay style",
+         "night shift lighting", "aerial facility view"],
+        "general_or_curated_web",
+    ),
+    "Food & Cooking": (
+        ["pizza", "burger", "pasta", "sushi", "steak", "salad", "soup", "tacos",
+         "curry", "rice dish", "sandwich", "dessert",
+         "ramen", "dumplings", "barbecue platter", "breakfast plate", "seafood platter",
+         "vegan bowl", "cheese board", "baked pastry"],
+        ["plated close-up", "overhead food photo", "cooking process",
+         "restaurant table setting", "ingredients laid out", "street food stall",
+         "home kitchen setting", "food styling macro shot"],
+        "general_or_curated_web",
+    ),
+    "Drinks & Beverages": (
+        ["coffee", "tea", "hot chocolate", "fruit juice", "smoothie",
+         "sparkling water", "soda", "milkshake", "mocktail", "energy drink",
+         "bottled water", "lemonade",
+         "iced coffee", "herbal infusion", "beer", "protein shake",
+         "coconut water", "wine"],
+        ["clean product shot", "cafe or restaurant setting",
+         "close-up with condensation or steam", "overhead composition",
+         "poured or splashing action", "garnished presentation",
+         "on a wooden table", "held in hand outdoors"],
+        "general_or_curated_web",
+    ),
+    "Household Objects": (
+        ["chair", "table", "sofa", "lamp", "mirror", "clock", "bookshelf",
+         "vacuum cleaner", "washing machine", "refrigerator", "coffee maker", "kitchen utensils",
+         "curtains", "rug", "trash can", "storage bins", "dish rack", "iron and ironing board"],
+        ["isolated product photo", "in-room context", "close-up detail",
+         "being used", "packed or stacked for storage", "cleaning or maintenance moment",
+         "top-down flat lay", "vintage vs modern comparison style"],
+        "general_or_curated_web",
+    ),
+    "Tools & Equipment": (
+        ["hammer", "screwdriver", "power drill", "saw", "wrench", "pliers",
+         "measuring tape", "toolbox", "ladder", "welder", "3D printer", "multimeter",
+         "angle grinder", "nail gun", "socket set", "level tool", "paint sprayer", "chainsaw"],
+        ["isolated tool photo", "in workshop", "being used by adult",
+         "close-up mechanical detail", "toolbox flat lay", "on a job site",
+         "worn and weathered look", "safety gear alongside tool"],
+        "general_or_curated_web",
+    ),
+    "Fashion & Apparel": (
+        ["casual outfit", "business suit", "evening dress", "winter clothing",
+         "streetwear", "sportswear", "sneakers", "boots", "handbag", "wristwatch",
+         "sunglasses", "jewelry",
+         "denim jacket", "scarf and accessories", "formal shoes", "swimwear",
+         "hat collection", "belt and leather goods"],
+        ["studio fashion photo", "street-style photo", "product detail",
+         "full outfit on adult model", "flat-lay outfit composition",
+         "seasonal lookbook style", "close-up fabric texture", "runway-style shot"],
+        "general_or_curated_web",
+    ),
+    "Beauty & Grooming": (
+        ["makeup", "skincare", "hairstyling", "barber haircut", "manicure",
+         "perfume", "lipstick", "foundation", "hairbrush", "electric razor",
+         "spa treatment", "facial care",
+         "eyeshadow palette", "hair coloring", "beard grooming", "nail polish set",
+         "face mask treatment", "eyebrow shaping"],
+        ["product photo", "adult person using product", "close-up detail",
+         "beauty studio scene", "before-and-after style", "flat-lay of products",
+         "salon environment", "morning routine moment"],
+        "general_or_curated_web",
+    ),
+    "Art & Design": (
+        ["oil painting", "watercolor painting", "wood carving",
+         "pencil drawing", "charcoal drawing", "sculpture", "ceramic art",
+         "street art", "graphic design", "typography", "3D render", "collage",
+         "stained glass art", "mosaic art", "printmaking", "textile art",
+         "installation art", "calligraphy art"],
+        ["finished artwork", "artist process", "close-up texture",
+         "gallery or studio setting", "work in progress on easel", "framed and displayed",
+         "tools and materials flat-lay", "detail of brushstrokes or texture"],
+        "general_or_curated_web",
+    ),
+    "Media & Entertainment": (
+        ["cinema theater", "film camera", "music concert", "recording studio",
+         "DJ setup", "video game setup", "arcade", "board game", "stage performance",
+         "podcast studio", "television studio", "book collection",
+         "movie set", "orchestra performance", "comedy club stage", "street performer",
+         "vinyl record collection", "theater backstage"],
+        ["wide scene", "equipment close-up", "adult audience or participants",
+         "behind-the-scenes view", "stage lighting close-up", "crowd reaction shot",
+         "empty venue before event", "performer close-up"],
+        "general_or_curated_web",
+    ),
+    "Science & Education": (
+        ["microscope", "telescope", "chemistry lab", "physics experiment",
+         "biology lab", "astronomy observatory", "classroom",
+         "university lecture hall", "textbooks", "mathematics notes",
+         "geology samples", "robotics project",
+         "genetics lab", "environmental field research", "coding classroom",
+         "science fair project", "library study session", "engineering workshop"],
+        ["equipment close-up", "adult researcher or student working",
+         "wide learning environment", "technical detail", "group study session",
+         "presenting findings on a whiteboard", "field research outdoors",
+         "data visualization on screen"],
+        "general_or_curated_web",
+    ),
+    "Medicine & Healthcare": (
+        ["hospital room", "doctor consultation", "nurse at work",
+         "medical laboratory", "field medic training", "X-ray equipment", "stethoscope",
+         "surgical instruments", "ambulance", "pharmacy", "dentist office",
+         "physical therapy",
+         "vaccination clinic", "emergency room", "medical imaging screen",
+         "home healthcare visit", "mental health counseling session", "childbirth ward"],
+        ["clinical environment", "equipment detail",
+         "adult healthcare professional working", "clean illustrative reference",
+         "patient consultation moment", "team of professionals collaborating",
+         "close-up of hands using instrument", "waiting room scene"],
+        "general_or_curated_web",
+    ),
+    "Business & Work": (
+        ["office meeting", "remote work", "software developer",
+         "designer workspace", "construction worker", "retail worker",
+         "warehouse worker", "chef at work", "photographer at work",
+         "mechanic at work", "scientist at work", "entrepreneur",
+         "accountant at desk", "lawyer at work", "farmer at work",
+         "call center agent", "delivery driver", "real estate agent"],
+        ["candid workplace", "wide work environment", "adult professional portrait",
+         "hands-on task detail", "team collaboration moment", "presenting to a group",
+         "close-up of tools of the trade", "end of workday scene"],
+        "general_or_curated_web",
+    ),
+    "Travel & Tourism": (
+        ["beach resort", "mountain lodge", "city hotel", "airport terminal",
+         "train journey", "road trip", "camping trip", "hiking trail",
+         "historic old town", "tropical beach", "snow resort", "desert travel",
+         "safari trip", "cruise ship", "backpacking adventure", "cultural landmark visit",
+         "island hopping trip", "road trip campervan"],
+        ["destination wide shot", "adult traveler experience",
+         "transport or lodging detail", "sunrise or sunset travel scene",
+         "packing or planning moment", "local street scene from traveler view",
+         "map and travel gear flat-lay", "candid group travel photo"],
+        "general_or_curated_web",
+    ),
+    "Culture & Traditions": (
+        ["traditional clothing", "folk dance", "traditional music",
+         "handicrafts", "street festival", "cultural ceremony",
+         "traditional architecture", "regional cuisine", "artisan market",
+         "calligraphy", "weaving", "pottery making",
+         "traditional tea ceremony", "religious festival", "harvest celebration",
+         "traditional wedding attire", "folk instrument making", "storytelling gathering"],
+        ["wide cultural scene", "adult participant portrait",
+         "close-up craft detail", "documentary-style photo",
+         "generational moment between elder and youth", "market stall detail",
+         "performance in traditional dress", "candid community gathering"],
+        "general_or_curated_web",
+    ),
+    "History & Vintage": (
+        ["vintage car", "antique furniture", "old camera", "typewriter",
+         "vinyl record player", "historic street", "historic train",
+         "old factory", "vintage fashion", "antique clock", "historic aircraft",
+         "old newspaper",
+         "vintage radio", "old film projector", "antique atlas", "historic ship",
+         "retro diner", "vintage toy collection"],
+        ["clean object view", "period environment", "close-up aged detail",
+         "museum-style presentation", "sepia-toned photo style",
+         "restoration in progress", "archival storage scene", "side-by-side old and new"],
+        "general_or_curated_web",
+    ),
+    "Fantasy & Science Fiction": (
+        ["fantasy castle", "dragon", "wizard", "knight", "enchanted forest",
+         "alien planet", "spaceship", "cyberpunk city", "futuristic robot",
+         "space station", "portal", "fantasy creature",
+         "elf warrior", "steampunk machine", "post-apocalyptic wasteland",
+         "underwater fantasy city", "floating islands", "mech suit"],
+        ["wide cinematic scene", "character or subject close-up",
+         "dramatic action scene", "environment concept art",
+         "moody atmospheric lighting", "battle or conflict scene",
+         "portrait in costume or armor", "aerial view of fictional landscape"],
+        "general_or_curated_web",
+    ),
+    "Abstract & Textures": (
+        ["marble texture", "wood grain", "metal texture", "fabric texture",
+         "paper texture", "water ripples", "smoke", "fire", "paint splash",
+         "geometric pattern", "bokeh lights", "color gradient",
+         "concrete texture", "rust and corrosion texture", "ice and frost texture",
+         "sand texture", "reflections", "liquid marbling"],
+        ["macro detail", "seamless-style texture", "high contrast variation",
+         "soft minimal variation", "backlit translucent texture",
+         "top-down flat texture", "textured close-up with shadow", "vivid color variation"],
+        "general_or_curated_web",
+    ),
+    "Events & Celebrations": (
+        ["birthday party", "wedding reception", "graduation", "concert crowd",
+         "conference", "trade show", "holiday dinner", "new year celebration",
+         "parade", "community festival", "award ceremony", "sports celebration",
+         "baby shower", "anniversary party", "retirement party", "charity gala",
+         "block party", "cultural parade float"],
+        ["wide event scene", "adult participants candid",
+         "decorations and detail", "night or ambient lighting",
+         "toast or speech moment", "candid laughter between guests",
+         "table setting detail", "fireworks or confetti moment"],
+        "general_or_curated_web",
+    ),
+    "Insects & Small Creatures": (
+        ["butterfly", "bee", "ladybug", "dragonfly", "ant", "beetle", "spider",
+         "praying mantis", "grasshopper", "moth", "caterpillar", "snail",
+         "firefly", "cricket", "centipede", "wasp"],
+        ["macro close-up", "on a flower or leaf", "in flight", "natural habitat",
+         "group or colony behavior", "backlit translucent wings", "camouflaged in environment",
+         "dew-covered morning shot"],
+        "general_or_curated_web",
+    ),
+    "Reptiles & Amphibians": (
+        ["snake", "chameleon", "iguana", "gecko", "frog", "toad", "crocodile",
+         "alligator", "turtle", "tortoise", "salamander", "komodo dragon",
+         "bearded dragon lizard", "tree frog"],
+        ["close-up portrait", "in natural habitat", "camouflaged detail",
+         "basking in sun", "swimming or in water", "climbing on branch or rock",
+         "vivid color pattern macro", "defensive or alert posture"],
+        "general_or_curated_web",
+    ),
+    "Space & Astronomy": (
+        ["planet surface", "moon", "solar eclipse", "galaxy", "nebula",
+         "space telescope", "astronaut", "rocket launch", "space station exterior",
+         "satellite", "meteor shower", "star cluster", "mars rover", "sun and solar flare"],
+        ["wide cosmic scene", "close-up detail", "telescope observatory view",
+         "spacecraft in orbit", "launch or liftoff moment", "night-sky long exposure",
+         "artist concept style render", "control room or mission scene"],
+        "general_or_curated_web",
+    ),
+    "Agriculture & Farming": (
+        ["wheat field", "rice paddy", "vineyard", "orchard", "dairy farm",
+         "cattle ranch", "greenhouse", "tractor in field", "harvest scene",
+         "beekeeping apiary", "poultry farm", "irrigation system",
+         "farmers market stall", "vegetable field rows"],
+        ["wide field view", "close-up crop detail", "adult farmer at work",
+         "harvest or planting action", "farm machinery in use", "sunrise over farmland",
+         "hand tools and produce detail", "seasonal change in the field"],
+        "general_or_curated_web",
+    ),
+    "Toys & Games": (
+        ["wooden building blocks", "stuffed teddy bear", "toy train set",
+         "board game pieces", "puzzle pieces", "action figure", "toy robot",
+         "playing cards", "dollhouse", "kite", "yo-yo", "marbles collection",
+         "toy car collection", "video game controller"],
+        ["product-style flat lay", "close-up detail", "in play or being used",
+         "collection display", "studio product photo", "on a shelf or in a toy box",
+         "outdoor play scene", "vintage vs modern comparison style"],
+        "general_or_curated_web",
+    ),
+    "Musical Instruments": (
+        ["acoustic guitar", "electric guitar", "grand piano", "violin", "cello",
+         "drum kit", "trumpet", "saxophone", "flute", "double bass",
+         "accordion", "harp", "ukulele", "synthesizer keyboard"],
+        ["studio product photo", "close-up detail", "being played by adult musician",
+         "on stage under lights", "in a music shop or workshop", "case and accessories flat-lay",
+         "vintage weathered look", "orchestra or ensemble setting"],
+        "general_or_curated_web",
+    ),
+    "Maps & Cartography": (
+        ["world map", "city street map", "topographic map", "nautical chart",
+         "antique map", "subway transit map", "hiking trail map", "globe",
+         "satellite map view", "weather map", "road atlas page", "treasure map style"],
+        ["flat overhead view", "close-up detail", "on a wooden desk with tools",
+         "digital screen display", "folded paper texture", "framed wall display",
+         "hand annotated version", "aged and weathered version"],
+        "general_or_curated_web",
+    ),
+    "Adult 18+ Safety Research": (
+        ["adult boudoir photography", "adult glamour photography",
+         "adult artistic nude portrait", "adult figure study",
+         "adult lingerie photography", "adult sensual portrait",
+         "adult erotic art", "adult romantic couple", "adult intimacy scene",
+         "adult body-positive portrait", "adult pin-up style",
+         "adult mature-theme photography",
+         "adult swimwear editorial", "adult fine-art figure study",
+         "adult fitness physique portrait", "adult classic pin-up illustration",
+         "adult vintage glamour style", "adult monochrome figure study"],
+        ["studio setting", "artistic editorial setting", "indoor lifestyle setting",
+         "tasteful composition", "natural window light setting",
+         "high-key minimalist setting", "low-key dramatic lighting setting",
+         "classic film-photography style setting"],
+        "adult_verified_only",
+    ),
+}
+
+
+def main() -> None:
+    rows = []
+    idx = 1
+    for top_category, (subcats, angles, tier) in CATALOGUE.items():
+        note = ADULT_NOTE if tier == "adult_verified_only" else GENERAL_NOTE
+        for sub in subcats:
+            for angle in angles:
+                cat_id = f"CAT-{idx:04d}"
+                idx += 1
+                title = f"{sub} — {angle}"
+                seed = f"{sub} {angle}"
+                rows.append([cat_id, top_category, sub, title, seed, tier, note])
+
+    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["catalogue_id", "top_category", "subcategory", "search_title",
+                    "query_seed", "source_tier", "safety_note"])
+        w.writerows(rows)
+
+    print(f"Wrote {len(rows)} rows across {len(CATALOGUE)} categories to {OUT_CSV}")
+
+
+if __name__ == "__main__":
+    main()

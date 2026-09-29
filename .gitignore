@@ -17,3 +17,5 @@ vision/samples/
 runs/
 .ipynb_checkpoints/
 .vscode/
+image-genrator-v2/dataset
+dataset/

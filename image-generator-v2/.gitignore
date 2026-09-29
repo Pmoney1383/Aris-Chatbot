@@ -1,0 +1,11 @@
+.venv/
+.env
+dataset/quarantine/
+dataset/final/
+dataset/test-image/
+dataset/manifest.sqlite3*
+dataset/clip_labels.sqlite3*
+models/
+logs/
+__pycache__/
+*.pyc
