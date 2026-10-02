@@ -92,7 +92,7 @@ ALIASES: dict[str, list[str]] = {
     "skincare": [r"(?:skin ?care|lotion|cream|moisturi\w+|serum)"],
     "hairstyling": [r"hair ?(?:styl\w+|dresser|salon|cut)", r"braid\w*", r"(?:styling|brushing|combing) (?:her|his) hair"],
     "barber haircut": [r"barber\w*", r"haircut", r"getting (?:a|his) hair cut"],
-    "manicure": [r"manicur(?:e|es|ist|ists|ing)", r"nails? (?:salon|polish|art)", r"painted nails"],
+    "manicure": [r"manicur(?:e|es|ist|ists|ing)\b", r"nails? (?:salon|polish|art)", r"painted nails"],
     "perfume": [r"perfume", r"fragrance", r"cologne"],
     "hairbrush": [r"hair ?brush", r"combs?\b"],
     "electric razor": [r"razor", r"shav\w+"],

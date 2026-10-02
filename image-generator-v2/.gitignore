@@ -9,3 +9,6 @@ models/
 logs/
 __pycache__/
 *.pyc
+samples/
+checkpoints/
+dataset/prepared/

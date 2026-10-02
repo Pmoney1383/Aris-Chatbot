@@ -366,9 +366,12 @@ def process_row(ctx: Context, row):
         return
     db.mark_row_status(cid, "in_progress")
 
+    only = (config.PHASE15_TIER_SOURCES.get(row["source_tier"])
+            if cid.startswith(config.PHASE15_ID_PREFIX) else None)
     state = {
         s.name: {"page": 1, "pages": 0, "stagnant": 0,
-                 "done": s.categories is not None and row["top_category"] not in s.categories}
+                 "done": (s.categories is not None and row["top_category"] not in s.categories)
+                         or (only is not None and s.name not in only)}
         for s in ctx.sources
     }
     busy_passes = 0
@@ -420,7 +423,7 @@ def process_row(ctx: Context, row):
                     got += 1
             st["stagnant"] = 0 if got else st["stagnant"] + 1
             if (not cands or st["stagnant"] >= config.MAX_STAGNANT_PAGES
-                    or st["pages"] >= config.MAX_PAGES_PER_SOURCE):
+                    or st["pages"] >= config.SOURCE_MAX_PAGES.get(source.name, config.MAX_PAGES_PER_SOURCE)):
                 st["done"] = True
         if answered:
             busy_passes = 0
@@ -492,6 +495,10 @@ def progress_loop(ctx: Context, start: float, rows_total: int, done_futures: lis
     detail_every = 300 if console.IS_TTY else 30
     last_detail = time.time()
     while not ctx.stop.wait(1.0):
+        if config.STOP_COLLECTION_FILE.exists():  # graceful stop requested by another process (phase15_pipeline.py)
+            console.log(f"{config.STOP_COLLECTION_FILE.name} found: finishing in-flight images and saving...")
+            ctx.stop.set()
+            break
         line = live_line(ctx, start, rows_total, done_futures)
         console.live(line)
         if time.time() - last_detail >= detail_every:
@@ -526,13 +533,22 @@ def print_status(db: manifest_db.ManifestDB):
     print("=" * 64)
 
 
+def phase15_id(area: str, label: str) -> str:
+    """Stable catalogue id for a Phase 1.5 concept, independent of list order."""
+    return config.PHASE15_ID_PREFIX + hashlib.sha1(f"{area}|{label}".encode()).hexdigest()[:10]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--status", action="store_true", help="print progress/ETA and exit")
     parser.add_argument("--category", type=str, default=None, help="only process this top_category")
     parser.add_argument("--limit", type=int, default=None, help="stop after accepting this many images this run")
     parser.add_argument("--per-row-target", type=int, default=None, help="override config.IMAGES_PER_ROW_TARGET")
-    parser.add_argument("--workers", type=int, default=config.NUM_WORKERS)
+    parser.add_argument("--workers", type=int, default=None, help="search-row threads (default: NUM_WORKERS, or PHASE15_WORKERS with --phase15)")
+    parser.add_argument("--expand", action="store_true",
+                        help="also run the dataset expansion: PD12M (raised caps, photo filter) and general Megalith")
+    parser.add_argument("--phase15", action="store_true",
+                        help="collect the Phase 1.5 concept list (scripts/phase15_concepts.py) instead of the main catalogue")
     parser.add_argument("--bing", action="store_true",
                         help="also use Bing web image search (off by default: results are often off-topic)")
     parser.add_argument("--no-watermark", action="store_true", help="skip watermark detection")
@@ -562,6 +578,8 @@ def main():
 
     db = manifest_db.ManifestDB()
 
+    if args.workers is None:
+        args.workers = config.PHASE15_WORKERS if args.phase15 else config.NUM_WORKERS
     catalogue = load_catalogue()
     db.upsert_rows(
         (r["catalogue_id"], r["top_category"], r["subcategory"], r["query_seed"], r["source_tier"],
@@ -569,7 +587,14 @@ def main():
         for r in catalogue
     )
 
-    srcs = [s for s in sources_mod.build_sources() if s.available()]
+    if args.phase15:
+        import phase15_concepts
+        db.upsert_rows((phase15_id(area, label), area, label, term, source, target, False)
+                       for area, label, source, term, target in phase15_concepts.concepts())
+        config.MAX_SEARCH_WAIT_SECONDS = config.PHASE15_SEARCH_WAIT_SECONDS
+        srcs = list(sources_mod.build_phase15_sources().values())
+    else:
+        srcs = [s for s in sources_mod.build_sources() if s.available()]
     print(f"Active sources: {[s.name for s in srcs]}", flush=True)
     if not srcs:
         print("No sources available (check API keys in .env). Aborting.")
@@ -578,6 +603,10 @@ def main():
 
     detector = None
     if config.WATERMARK_ENABLED and not args.no_watermark:
+        if args.phase15:
+            import torch
+            if torch.cuda.is_available():  # leave the GPU to the DiT training run
+                torch.cuda.set_per_process_memory_fraction(config.PHASE15_GPU_MEMORY_FRACTION)
         import watermark
         detector = watermark.WatermarkDetector()
         print(f"Watermark detector loaded on {detector.device} (reject >= {config.WATERMARK_THRESHOLD})", flush=True)
@@ -588,18 +617,26 @@ def main():
 
     rows = []
     if not (args.pd12m_only or args.megalith_only):
-        rows = [r for r in db.pending_rows(args.category, args.retry_exhausted) if not is_adult(r["top_category"])]
+        rows = [r for r in db.pending_rows(args.category, args.retry_exhausted)
+                if not is_adult(r["top_category"])
+                and r["catalogue_id"].startswith(config.PHASE15_ID_PREFIX) == args.phase15
+                and r["source_tier"] != "megalith"]  # megalith rows are filled by the Megalith importer
         random.Random(0).shuffle(rows)
     print(f"{len(rows):,} rows to work through with {args.workers} workers.", flush=True)
 
-    if config.PD12M_ENABLED and not args.no_pd12m and not args.category and not args.megalith_only:
+    if (config.PD12M_ENABLED and not args.no_pd12m and not args.category and not args.megalith_only
+            and (not args.phase15 or args.expand)):
         import pd12m
         ctx.bulks.append(pd12m.PD12MImporter(ctx, pd12m.CaptionMatcher(catalogue), process_candidate, args.pd12m_workers))
         print(f"PD12M bulk import running with {args.pd12m_workers} workers.", flush=True)
     if config.MEGALITH_ENABLED and not args.no_megalith and not args.category and not args.pd12m_only:
         import megalith
-        ctx.bulks.append(megalith.MegalithImporter(ctx, process_candidate, args.megalith_workers))
+        ctx.bulks.append(megalith.MegalithImporter(ctx, process_candidate, args.megalith_workers, phase15=args.phase15))
         print(f"Megalith gap filler running with {args.megalith_workers} workers.", flush=True)
+    if args.expand and not args.category:
+        import megalith
+        ctx.bulks.append(megalith.MegalithGeneralImporter(ctx, process_candidate, args.megalith_workers, catalogue))
+        print(f"Megalith general expansion running with {args.megalith_workers} workers.", flush=True)
     for b in ctx.bulks:
         b.start()
 

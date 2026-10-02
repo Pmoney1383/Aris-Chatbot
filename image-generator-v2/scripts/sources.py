@@ -411,6 +411,158 @@ class NasaImagesSource(BaseSource):
         return out
 
 
+class CommonsCategorySource(BaseSource):
+    """Walks one Wikimedia Commons category (found by searching the row's
+    query) and its subcategories, breadth-first. Every file in that tree is
+    labeled by the concept, which makes this the source of specific, labeled
+    photos (a car model, a dish) at full resolution.
+
+    Subcategories are followed only while their names still contain the
+    resolved category's name and none of COMMONS_SKIP_SUBCATEGORY_WORDS, so
+    "Pizza" reaches "Pizza Margherita in Naples" but not "Pizza boxes".
+    Each search() call returns the next batch; [] once the tree is exhausted."""
+
+    name = "commons_cat"
+    MAX_DEPTH = 3
+
+    def __init__(self):
+        self._walks: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def _api(self, params):
+        return _json_or_none(paced_get("https://commons.wikimedia.org/w/api.php", "wikimedia_api",
+                                       params={**params, "format": "json"}))
+
+    def _resolve(self, query):
+        data = self._api({"action": "query", "list": "search", "srsearch": query, "srnamespace": 14, "srlimit": 10})
+        if data is BUSY:
+            return BUSY
+        titles = [h["title"][len("Category:"):] for h in data.get("query", {}).get("search", [])]
+        q = query.lower()
+        exact = [t for t in titles if t.lower() == q]
+        return (exact or titles or [None])[0]
+
+    @staticmethod
+    def _stem(title: str) -> str:
+        return re.sub(r"\s*\(.*?\)\s*", " ", title).strip().lower()
+
+    def _next_category(self, walk):
+        """Advance to the next queued category; False when the tree is exhausted. Caller holds the lock."""
+        while walk["queue"] and walk["queue"][0][0] in walk["seen"]:
+            walk["queue"].pop(0)
+        if not walk["queue"]:
+            return False
+        walk["current"] = walk["queue"].pop(0)
+        walk["seen"].add(walk["current"][0])
+        walk["cont"] = None
+        return True
+
+    def _follow(self, sub: str, root_stem: str) -> bool:
+        low = sub.lower()
+        return (re.search(r"\b" + re.escape(root_stem) + r"\b", low) is not None
+                and not any(re.search(r"\b" + re.escape(w), low) for w in config.COMMONS_SKIP_SUBCATEGORY_WORDS))
+
+    def search(self, query, page):
+        with self._lock:
+            walk = self._walks.get(query)
+        if walk is None:
+            root = self._resolve(query)
+            if root is BUSY:
+                return BUSY
+            walk = {"root_stem": self._stem(root) if root else "", "queue": [(root, 0)] if root else [],
+                    "seen": set(), "cont": None, "current": None}
+            with self._lock:
+                walk = self._walks.setdefault(query, walk)
+        min_short = config.SOURCE_MIN_SHORT_SIDE.get(self.name, config.MIN_SHORT_SIDE)
+        # Category pages that hold only subcategories yield no files; keep walking
+        # (bounded) so the caller never mistakes such a page for an exhausted source.
+        for _ in range(config.COMMONS_MAX_CALLS_PER_SEARCH):
+            with self._lock:
+                if walk["current"] is None and not self._next_category(walk):
+                    return []
+                (cat, depth), cont = walk["current"], walk["cont"]
+            data = self._api({"action": "query", "generator": "categorymembers", "gcmtitle": "Category:" + cat,
+                              "gcmtype": "file|subcat", "gcmlimit": config.SOURCE_PAGE_SIZE["commons_cat"],
+                              "prop": "imageinfo", "iiprop": "url|size|mime",
+                              "iiurlwidth": config.SOURCE_DOWNLOAD_MAX_EDGE, **(cont or {})})
+            if data is BUSY:
+                return BUSY
+            out, subcats = [], []
+            for p in data.get("query", {}).get("pages", {}).values():
+                if p.get("ns") == 14:
+                    sub = p["title"][len("Category:"):]
+                    if depth < self.MAX_DEPTH and self._follow(sub, walk["root_stem"]):
+                        subcats.append((sub, depth + 1))
+                    continue
+                info = (p.get("imageinfo") or [{}])[0]
+                if info.get("mime") not in ("image/jpeg", "image/png", "image/webp"):
+                    continue
+                if min(info.get("width", 0), info.get("height", 0)) < min_short:
+                    continue  # skip before download
+                url = info.get("thumburl") or info.get("url")
+                if url:
+                    out.append(Candidate(url, "commons.wikimedia.org", info.get("descriptionurl", url),
+                                         "wikimedia_commons"))
+            with self._lock:
+                walk["queue"].extend(subcats)
+                if "continue" in data:
+                    walk["cont"] = data["continue"]
+                else:
+                    walk["current"] = None
+            if out:
+                return out
+        return []
+
+
+class INatSpeciesSource(INaturalistSource):
+    """iNaturalist by exact scientific name, downloading the 'large' rendition
+    (1024px long edge) instead of the original: labeled species photos above
+    the 512px floor at a fraction of the bytes."""
+
+    name = "inat_species"
+    categories = None
+    by_subcategory = False  # search by the row's query (scientific name), not its label (common name)
+
+    def search(self, query, page):
+        per_page = config.SOURCE_PAGE_SIZE["inaturalist"]
+        if page * per_page > self.MAX_RESULTS:
+            return []
+        taxon = self._taxon_id(query)
+        if taxon is BUSY:
+            return BUSY
+        if taxon is None:
+            return []
+        data = _json_or_none(paced_get(
+            "https://api.inaturalist.org/v1/observations", "inat_api",
+            params={
+                "taxon_id": taxon, "photos": "true", "quality_grade": "research", "captive": "false",
+                "photo_license": "cc0,cc-by,cc-by-sa,cc-by-nc,cc-by-nc-sa,cc-by-nd,cc-by-nc-nd",
+                "per_page": per_page, "page": page, "order_by": "votes",
+            },
+        ))
+        if data is BUSY:
+            return BUSY
+        min_short = config.SOURCE_MIN_SHORT_SIDE.get(self.name, config.MIN_SHORT_SIDE)
+        out = []
+        for obs in data.get("results", []):
+            p = (obs.get("photos") or [{}])[0]
+            if not p.get("url"):
+                continue
+            dims = p.get("original_dimensions") or {}
+            w, h = dims.get("width", 0), dims.get("height", 0)
+            if dims and min(w, h) * min(1.0, 1024 / max(w, h, 1)) < min_short:
+                continue  # the 1024px rendition would fall below the floor
+            url = p["url"].replace("/square.", "/large.")
+            out.append(Candidate(url, "inaturalist.org", obs.get("uri", url), p.get("license_code")))
+        return out
+
+
+def build_phase15_sources() -> dict[str, BaseSource]:
+    """Phase 1.5 connectors by name, in the order they are tried (see config.PHASE15_TIER_SOURCES)."""
+    return {"commons_cat": CommonsCategorySource(), "wikimedia": WikimediaCommonsSource(),
+            "inat_species": INatSpeciesSource(), "nasa": NasaImagesSource()}
+
+
 def build_sources() -> list[BaseSource]:
     registry = {
         "openverse": OpenverseSource(),

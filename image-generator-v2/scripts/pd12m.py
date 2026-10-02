@@ -70,6 +70,8 @@ class PD12MImporter:
         self.counts = collections.Counter(ctx.db.subcategory_counts(DATASET))
         self.total = sum(self.counts.values())
         self.unsafe = re.compile(config.UNSAFE_CAPTION_PATTERN, re.I)
+        pattern = getattr(config, "PD12M_EXCLUDE_PATTERN", None)
+        self.exclude = re.compile(pattern, re.I) if pattern else None
         self.skipped = collections.Counter()
         self.shards_total = 0
         self.shards_done = 0
@@ -161,6 +163,9 @@ class PD12MImporter:
                     caption = r["caption"] or ""
                     if self.unsafe.search(caption):
                         self._skip("unsafe_caption")
+                        continue
+                    if self.exclude is not None and self.exclude.search(caption):
+                        self._skip("not_photo")
                         continue
                     key = self.matcher.match(caption) or (config.PD12M_UNMATCHED_CATEGORY, "unmatched")
                     if not self._has_room(key):

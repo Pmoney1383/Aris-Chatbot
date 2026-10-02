@@ -56,11 +56,33 @@ class AliasMatcher:
                 yield self.keys[int(m.lastgroup[1:])]
 
 
+class PatternMatcher:
+    """Phase 1.5 scene rows: each open key has its own caption regex (the
+    row's query_seed); keys are yielded in order of where they first match."""
+
+    def __init__(self, keys, patterns: dict):
+        self.keys = list(keys)
+        self.rx = {k: re.compile(patterns[k], re.I) for k in self.keys}
+
+    def candidates(self, caption: str):
+        head = caption[:config.PHASE15_SCENE_MATCH_CHARS]  # the main subject comes first
+        hits = [(m.start(), k) for k in self.keys if (m := self.rx[k].search(head))]
+        for _, k in sorted(hits):
+            yield k
+
+
 class MegalithImporter:
     name = DATASET
 
-    def __init__(self, ctx, process_fn, workers: int):
+    def __init__(self, ctx, process_fn, workers: int, phase15: bool = False):
+        """phase15=False fills the main catalogue's open rows by subcategory name
+        and aliases; phase15=True fills only the Phase 1.5 scene rows, matching
+        each row's caption regex, with its own shard progress so every shard
+        is scanned again."""
         self.ctx = ctx
+        self.phase15 = phase15
+        self.shard_key = config.PHASE15_MEGALITH_DATASET if phase15 else DATASET
+        self.name = self.shard_key
         self.process_fn = process_fn
         self.workers = workers
         self.q: queue.Queue = queue.Queue(maxsize=workers * 50)
@@ -75,18 +97,27 @@ class MegalithImporter:
 
         # (top_category, subcategory) -> {catalogue_id: [row, remaining]}
         self.open: dict[tuple[str, str], dict[str, list]] = collections.defaultdict(dict)
+        self.patterns: dict[tuple[str, str], str] = {}
         for r in ctx.db.pending_rows(include_exhausted=True):
             if r["top_category"] in config.ADULT_CATEGORY_NAMES:
                 continue
+            is_p15 = r["catalogue_id"].startswith(config.PHASE15_ID_PREFIX)
+            if is_p15 != phase15 or (phase15 and r["source_tier"] != "megalith"):
+                continue
+            if phase15:
+                self.patterns[(r["top_category"], r["subcategory"])] = r["query_seed"]
             room = r["target"] - r["accepted_count"]
             if room > 0:
                 self.open[(r["top_category"], r["subcategory"])][r["catalogue_id"]] = [dict(r), room]
-        self.matcher = AliasMatcher(self.open) if self.open else None
+        self.matcher = self._make_matcher(list(self.open)) if self.open else None
         # Set when a subcategory closes or reopens. The regex only reports one
         # subcategory per caption position, so a closed one would keep hiding
         # others that share its words ("parrot" in Pets and Birds) until the
         # matcher is rebuilt from the open set.
         self.matcher_stale = False
+
+    def _make_matcher(self, keys):
+        return PatternMatcher(keys, self.patterns) if self.phase15 else AliasMatcher(keys)
 
     # -- public -------------------------------------------------------------
 
@@ -105,7 +136,7 @@ class MegalithImporter:
         with self.lock:
             skipped = ", ".join(f"{k} {v:,}" for k, v in self.skipped.most_common(3))
             open_rows = sum(len(v) for v in self.open.values())
-            return (f"megalith: {self.total:,} kept | open rows {open_rows:,} | shards "
+            return (f"{self.name}: {self.total:,} kept | open rows {open_rows:,} | shards "
                     f"{self.shards_done}/{self.shards_total} | queue {self.q.qsize()} | "
                     f"pre-download skips: {skipped or '-'}")
 
@@ -123,7 +154,7 @@ class MegalithImporter:
                 keys = list(self.open)
                 self.matcher_stale = False
             if keys:
-                self.matcher = AliasMatcher(keys)
+                self.matcher = self._make_matcher(keys)
         for key in self.matcher.candidates(caption):
             with self.lock:
                 if key in self.open:
@@ -174,7 +205,7 @@ class MegalithImporter:
             fs = HfFileSystem()
             repo = f"datasets/{config.MEGALITH_HF_REPO}"
             names = sorted(p.removeprefix(repo + "/") for p in fs.glob(f"{repo}/train/*.parquet"))
-            done = ctx.db.done_shards(DATASET)
+            done = ctx.db.done_shards(self.shard_key)
             todo = [n for n in names if n not in done]
             random.Random(0).shuffle(todo)
             with self.lock:
@@ -212,7 +243,7 @@ class MegalithImporter:
                 while self.q.unfinished_tasks and not ctx.stop.is_set():
                     time.sleep(1)
                 if complete and not ctx.stop.is_set():
-                    ctx.db.mark_shard_done(DATASET, name)
+                    ctx.db.mark_shard_done(self.shard_key, name)
                     with self.lock:
                         self.shards_done += 1
                     console.log(f"megalith: finished {name} ({self.shards_done}/{self.shards_total})")
@@ -249,3 +280,55 @@ class MegalithImporter:
                 console.log("megalith worker error (continuing):\n" + traceback.format_exc())
             finally:
                 self.q.task_done()
+
+
+class MegalithGeneralImporter(MegalithImporter):
+    """General expansion (gather_images.py --expand): keeps Megalith photos that
+    aren't tied to catalogue rows, filed like PD12M -- under the first catalogue
+    subcategory named in the caption, or "General (Megalith)" -- with per-key
+    and total caps. Its own shard progress, so every shard is scanned."""
+
+    CATALOGUE_ID = "MEGALITH-GEN"
+
+    def __init__(self, ctx, process_fn, workers: int, catalogue):
+        super().__init__(ctx, process_fn, workers, phase15=True)  # phase15=True -> no main-catalogue rows loaded
+        from pd12m import CaptionMatcher
+        self.open = {}
+        self.matcher = CaptionMatcher(catalogue)
+        self.shard_key = self.name = config.MEGALITH_GENERAL_DATASET
+        with ctx.db.lock:
+            rows = ctx.db.conn.execute(
+                "SELECT top_category, subcategory, COUNT(*) FROM images WHERE catalogue_id=? GROUP BY 1, 2",
+                (self.CATALOGUE_ID,)).fetchall()
+        self.counts = collections.Counter({(a, b): n for a, b, n in rows})
+        self.total = sum(self.counts.values())
+
+    def status_line(self) -> str:
+        with self.lock:
+            skipped = ", ".join(f"{k} {v:,}" for k, v in self.skipped.most_common(3))
+            return (f"{self.name}: {self.total:,}/{config.MEGALITH_GENERAL_MAX_IMAGES:,} kept | shards "
+                    f"{self.shards_done}/{self.shards_total} | queue {self.q.qsize()} | pre-download skips: {skipped or '-'}")
+
+    def _cap(self, key) -> int:
+        return (config.MEGALITH_GENERAL_UNMATCHED_MAX if key[0] == config.MEGALITH_GENERAL_UNMATCHED_CATEGORY
+                else config.MEGALITH_GENERAL_MAX_PER_SUBCATEGORY)
+
+    def _finished(self) -> bool:
+        with self.lock:
+            return self.total >= config.MEGALITH_GENERAL_MAX_IMAGES
+
+    def _pick_key(self, caption: str):
+        key = self.matcher.match(caption) or (config.MEGALITH_GENERAL_UNMATCHED_CATEGORY, "unmatched")
+        with self.lock:
+            return key if self.counts[key] < self._cap(key) else None
+
+    def _claim_row(self, key):
+        with self.lock:
+            if self.counts[key] >= self._cap(key) or self.total >= config.MEGALITH_GENERAL_MAX_IMAGES:
+                return None
+            self.counts[key] += 1  # reserved; given back by _release_row if the download is rejected
+        return {"catalogue_id": self.CATALOGUE_ID, "top_category": key[0], "subcategory": key[1], "target": 10 ** 12}
+
+    def _release_row(self, key, row):
+        with self.lock:
+            self.counts[key] -= 1

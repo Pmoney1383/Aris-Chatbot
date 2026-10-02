@@ -30,6 +30,13 @@ FINAL_DIR = ROOT / "dataset" / "final"
 TEST_IMAGE_DIR = ROOT / "dataset" / "test-image"
 MANIFEST_DB = ROOT / "dataset" / "manifest.sqlite3"
 CLIP_LABELS_DB = ROOT / "dataset" / "clip_labels.sqlite3"  # written by relabel_images.py
+# vehicle_probe.py: Transportation images whose probe p(no vehicle) is at least this
+# are left out of captions.csv. Set from the cross-validated precision in `train`.
+# 2026-10-01, 1,260 labels: at 0.8 the CV drops were 55 N, 7 V (vehicle, no usable view),
+# 1 real side view -- 87% strict N precision, ~98% "not a useful vehicle photo".
+NO_VEHICLE_DROP_PROB = 0.8
+# A running gather_images.py stops gracefully (saving everything) when this file appears.
+STOP_COLLECTION_FILE = ROOT / "dataset" / "STOP_COLLECTION"
 LOG_DIR = ROOT / "logs"
 
 # Overall dataset target. Script keeps running (across resumes) until this
@@ -48,7 +55,9 @@ MIN_SHORT_SIDE = 1080
 # 1280px), so a 3:2 photo arrives at 1280x853. Holding it to 1080 rejected
 # nearly every Pixabay image; 800 admits 3:2 and 4:3 photos. width/height are
 # stored in the manifest, so training can still filter these out later.
-SOURCE_MIN_SHORT_SIDE = {"pixabay": 800, "megalith": 640}
+SOURCE_MIN_SHORT_SIDE = {"pixabay": 800, "megalith": 640,
+                         # Phase 1.5 sources: 512 = the phase-2 training resolution
+                         "commons_cat": 512, "inat_species": 512, "nasa": 512, "wikimedia": 512}
 MAX_DOWNLOAD_BYTES = 40 * 1024 * 1024  # skip absurdly large files
 MAX_OUTPUT_JPEG_BYTES = int(1.5 * 1024 * 1024)  # reject anything whose re-encoded JPEG exceeds this
 OUTPUT_JPEG_QUALITY = 92
@@ -74,7 +83,7 @@ DB_COMMIT_EVERY = 50
 DOMAIN_MIN_INTERVAL_SECONDS = {
     "pexels_api": 18.5,      # Pexels free tier: 200 requests/hour
     "pixabay_api": 0.65,     # Pixabay: 100 requests/minute
-    "wikimedia_api": 1.0,
+    "wikimedia_api": 1.5,         # Wikimedia: 200 req/min total per client (API + media); 40/min here
     "openverse_api": 2.0,
     "unsplash_api": 75.0,    # Unsplash demo tier: 50 requests/hour
     "bing_search": 2.0,
@@ -83,13 +92,15 @@ DOMAIN_MIN_INTERVAL_SECONDS = {
     "images.pexels.com": 0.05,
     "cdn.pixabay.com": 0.05,
     "pixabay.com": 0.1,
-    "upload.wikimedia.org": 0.25,
+    "upload.wikimedia.org": 0.4,  # + 150/min downloads = 190/min, under the 200/min limit
     "inaturalist-open-data.s3.amazonaws.com": 0.3,
     "static.inaturalist.org": 0.5,
     "images-assets.nasa.gov": 0.2,
     "pd12m.s3.us-west-2.amazonaws.com": 0.02,
-    **{f"farm{i}.staticflickr.com": 0.05 for i in (*range(1, 10), 66)},
-    "live.staticflickr.com": 0.05,
+    # Flickr's CDN blocked this IP (403) after ~517k Megalith downloads at 0.05s/host;
+    # 0.5s/host (~20 downloads/s over all hosts) is the gentler pace.
+    **{f"farm{i}.staticflickr.com": 0.5 for i in (*range(1, 10), 66)},
+    "live.staticflickr.com": 0.5,
 }
 DEFAULT_MIN_INTERVAL_SECONDS = 0.5
 
@@ -115,12 +126,15 @@ SOURCE_PAGE_SIZE = {
     "bing": 100,
     "inaturalist": 200,
     "nasa": 100,
+    "commons_cat": 50,   # the API scales thumbnails for at most 50 files per request
 }
 # Stop querying a source for a row after this many consecutive pages that
 # produced no accepted image.
 MAX_STAGNANT_PAGES = 2
 # Hard cap on pages per source per row, so a row can't spin forever.
 MAX_PAGES_PER_SOURCE = 10
+# Per-source overrides: Commons pages are small (50 files), so a concept needs more of them.
+SOURCE_MAX_PAGES = {"commons_cat": 60}
 
 # Stock-photo / preview hosts whose images are watermarked by design. Web
 # search results from these are skipped before download.
@@ -154,6 +168,7 @@ ADULT_COLLECTION_ENABLED = False  # do not flip without wiring a real verified-a
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "")
 UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")   # openai_food_batch.py (food & drink captions)
 
 # Order sources are tried per row. Subject-specific sources (iNaturalist,
 # NASA -- each limited to its own categories, see sources.py) go first because
@@ -171,9 +186,19 @@ SOURCE_ORDER = ["inaturalist", "nasa", "pexels", "pixabay", "wikimedia", "unspla
 PD12M_ENABLED = True
 PD12M_WORKERS = 8
 PD12M_HF_REPO = "Spawning/PD12M"
-PD12M_MAX_IMAGES = 400_000            # total cap, so museum objects don't swamp the dataset
-PD12M_MAX_PER_SUBCATEGORY = 1_500     # per caption-matched catalogue subcategory
-PD12M_UNMATCHED_MAX = 150_000         # captions matching no subcategory go to "General (PD12M)"
+# Raised from 400k / 1.5k / 150k for the Phase 1.5 expansion (more unique images ->
+# fewer epochs over the same pictures); PD12M_EXCLUDE_PATTERN keeps the new ones photographic.
+PD12M_MAX_IMAGES = 1_000_000          # total cap
+PD12M_MAX_PER_SUBCATEGORY = 4_000     # per caption-matched catalogue subcategory
+PD12M_UNMATCHED_MAX = 400_000         # captions matching no subcategory go to "General (PD12M)"
+# Captions matching this are skipped before download: museum objects, artwork, documents,
+# maps (PD12M has many). Applies to shards read from now on; already-imported images stay.
+PD12M_EXCLUDE_PATTERN = (
+    r"\b(painting|drawing|illustration|engraving|etching|lithograph|woodcut|print|manuscript|document|"
+    r"page|text|letter|handwritten|handwriting|map|poster|stamp|coin|medal|banknote|herbarium|specimen|"
+    r"fossil|sculpture|statue|figurine|artifact|artefact|museum|plate|portrait of|bust|carving|textile|"
+    r"fabric sample|vase|ceramic|pottery|jar|bowl with|object|tool|weapon|sword|jewelry|brooch|ring)\b"
+)
 PD12M_MAX_LONG_EDGE = 6000            # skip giant originals (bandwidth); plenty remain
 PD12M_UNMATCHED_CATEGORY = "General (PD12M)"
 
@@ -185,6 +210,13 @@ MEGALITH_ENABLED = True
 MEGALITH_WORKERS = 24
 MEGALITH_HF_REPO = "CaptionEmporium/flickr-megalith-10m-internvl2-multi-caption"
 MEGALITH_CAPTION_COLUMN = "caption_internlm2_short"
+# General Megalith expansion (gather_images.py --expand): photos not tied to catalogue rows,
+# filed by caption-matched subcategory like PD12M, under these caps.
+MEGALITH_GENERAL_MAX_IMAGES = 400_000
+MEGALITH_GENERAL_MAX_PER_SUBCATEGORY = 4_000
+MEGALITH_GENERAL_UNMATCHED_MAX = 150_000
+MEGALITH_GENERAL_UNMATCHED_CATEGORY = "General (Megalith)"
+MEGALITH_GENERAL_DATASET = "megalith_gen"   # shard-progress key
 # A subcategory must be named within this many leading caption characters.
 # Later mentions are usually background ("...standing before a field of
 # wildflowers"), which filed photos under the wrong subcategory.
@@ -213,4 +245,28 @@ BROWSER_USER_AGENT = (
 # Near-duplicate rejection threshold (Hamming distance between 64-bit pHashes).
 PHASH_MAX_DISTANCE = 6
 
-USER_AGENT = "ArisImageGatherer/1.0 (research dataset collection; contact: local operator)"
+USER_AGENT = "ArisImageGatherer/1.0 (research dataset collection; https://github.com/Pmoney1383/Aris-Chatbot)"
+
+
+# -- Phase 1.5 (scripts/phase15_concepts.py, gather_images.py --phase15) -----
+PHASE15_ID_PREFIX = "P15-"
+PHASE15_WORKERS = 10
+PHASE15_SEARCH_WAIT_SECONDS = 20.0   # workers share the 1 req/s Commons API; let them queue instead of giving up
+PHASE15_GPU_MEMORY_FRACTION = 0.12   # caps the watermark detector at ~2 GB so it can run next to DiT training
+PHASE15_MEGALITH_DATASET = "megalith_p15"  # separate shard progress: re-scans every shard for the scene patterns
+COMMONS_MAX_CALLS_PER_SEARCH = 8
+# Commons subcategories whose names contain any of these are not followed
+# (packaging, venues, artwork, toys, parts...): they drift away from the concept.
+COMMONS_SKIP_SUBCATEGORY_WORDS = (
+    "box", "packag", "oven", "restaurant", "shop", "store", "stall", "vendor", "market", "logo", "sign",
+    "advert", "poster", "label", "menu", "stamp", "coin", "museum", "drawing", "painting", "illustration",
+    "in art", "art ", "sculpture", "statue", "diagram", "map", "toy", "scale model", "lego", "model car",
+    "interior", "dashboard", "engine", "wheel", "badge", "emblem", "brochure", "catalog", "manual", "patent",
+    "ingredient", "recipe", "cookbook", "machine", "factory", "production", "people eating", "eating",
+    "festival", "competition", "video", "screenshot", "wreck", "crash", "accident", "damaged",
+)
+# concept source -> connectors, tried in order. Commons concepts fall back to Commons full-text
+# search when their category tree is small (e.g. many Persian dishes have only a few categorized files).
+PHASE15_TIER_SOURCES = {"commons": ("commons_cat", "wikimedia"), "wsearch": ("wikimedia",),
+                        "inat": ("inat_species",), "nasa": ("nasa",)}
+PHASE15_SCENE_MATCH_CHARS = 140   # scene regexes must match within the start of a Megalith caption

@@ -98,7 +98,8 @@ class ManifestDB:
             self.conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             return
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
+        # Long busy timeout: the collector, the captioner and vehicle_probe.py may write at the same time.
+        self.conn = sqlite3.connect(str(path), check_same_thread=False, timeout=120)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -110,6 +111,13 @@ class ManifestDB:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(images)")}
         if "watermark_score" not in cols:
             self.conn.execute("ALTER TABLE images ADD COLUMN watermark_score REAL")
+        # Multi-length captions (caption_images.py): `caption` stays the detailed one.
+        for col, kind in (("caption_medium", "TEXT"), ("caption_short", "TEXT"),
+                          ("caption_source", "TEXT"), ("grayscale", "INTEGER"),
+                          ("viewpoint", "TEXT"), ("viewpoint_conf", "REAL"),
+                          ("no_vehicle_prob", "REAL")):  # vehicle_probe.py
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE images ADD COLUMN {col} {kind}")
 
     def _wrote(self, n=1):
         self._pending_writes += n
